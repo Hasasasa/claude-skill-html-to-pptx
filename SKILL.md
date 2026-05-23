@@ -64,7 +64,7 @@ convert.py 跑完不等于交付完成。完整流程：
 convert.py
   → Stage 5a 结构化自检（OOXML 扫描，给提示）
   → Stage 5b 视觉 audit 物料 — 需要 PowerPoint COM 或 LibreOffice 渲染器
-  → 【并行 audit】每页一个 sub-agent 看 compare 图返回 findings，主 agent 合并写 audit_findings.md
+  → 【并行 audit】按 batch（4 页/batch）并行 sub-agent 看 compare 图返回 findings，主 agent 合并写 audit_findings.md
   → 按 finding 修源 HTML（首选）或 skill 代码
   → 重跑 convert + 重做 audit（findings_round_2.md ...）
   → 所有页 OK 或仅剩 LOW
@@ -92,22 +92,23 @@ Stage 5b 视觉 audit 需要把 .pptx 渲染成 PNG，依赖：
 
 ### 并行 audit（前提：5b 跑起来了）
 
-每页独立 sub-agent 看 compare 图。完整 sub-agent 调用模板 + 检查清单 + findings 格式见 `<out>_audit/audit_prompt.md`（5b 跑通时和 compare 图一起产出，是单一权威源）。
+按 batch 分发 sub-agent 看 compare 图。完整 sub-agent 调用模板 + 检查清单 + findings 格式见 `<out>_audit/audit_prompt.md`。
 
 按页数选策略：
 
 | slide 数 | 策略 |
 |---|---|
-| ≤ 16 | **每页一个 sub-agent**，一条消息里全部 Agent 并行 dispatch |
-| > 16 | 分 4-5 个 batch 并行（避免撞 API 限速 / 节省 token） |
+| ≤ 4 | 主 agent 直接看，不分发 sub-agent |
+| 5-20 | 每 batch 4 页并行 dispatch |
+| > 20 | 每 batch 4-5 页 |
 
-**关键**：sub-agent 只返回 findings 文本，主 agent 统一合并写 `audit_findings.md`。多个并发写文件会互相覆盖。
+sub-agent 只返回 findings 文本（含每页的 `## page NN` 块），主 agent 统一合并写 `audit_findings.md`。多个并发写文件会互相覆盖。
 
 **交付前必须 cleanup**：audit 物料是 agent 工作用的中间产物，用户只要 .pptx。最终一行命令 `python convert.py <out>.pptx --cleanup` 会把同目录下 `<out>_audit/`、`<out>_measurements*`、`<out>_preflight.json` 全部删干净，目录里只剩 `<out>.pptx`。
 
 ## 沉淀 HTML 问题与 OOXML 边界（强制）
 
-你的角色是**调用 + 用法沉淀**，不是修 skill。skill 代码追求抽象 + 全面，能力驱动而非补丁累积——发现 skill 内部 bug 时**不要原地改 measure.py / assemble.py**，那是作者的 PR review 心态决定的事，agent 局部补丁会破坏其他 deck 的平衡。
+你的角色是**调用 + 用法沉淀**，不是修 skill。发现 skill 内部 bug 时**不要原地改 measure.py / assemble.py**。
 
 只沉淀两类：
 
@@ -133,10 +134,8 @@ Stage 5b 视觉 audit 需要把 .pptx 渲染成 PNG，依赖：
 
 发现某症状用同种 CSS 模式换 deck 还会撞、且不在已知 OOXML 边界内 → 这是 skill 抽象不到位。**不要原地改 skill 代码**。做这两件事：
 
-1. 当前 deck **走 HTML 端 workaround** 把 finding 修掉（让用户拿到能交付的 PPT）
+1. 当前 deck **走 HTML 端 workaround** 把 finding 修掉，让用户拿到能交付的 PPT
 2. **明确告知用户**："发现一个看起来是 skill 内的通用 bug：[症状 + 触发 CSS 模式 + 当前 workaround]。建议作者按 issue 收录，让 skill 在 measure/assemble 里更通用地处理这种模式"
-
-理由：agent 局部改 skill 是补丁思维；skill 的演进应该是作者按"提升抽象"的心态做的——不是 agent 调用一次就触发一次 patch。
 
 ### 共享 vs 本地：HTML/OOXML 沉淀到哪一边
 
@@ -208,4 +207,4 @@ Stage 5b 视觉 audit 需要把 .pptx 渲染成 PNG，依赖：
 ## 引用
 
 - 维护扩展必读 → [`references/methodology.md`](./references/methodology.md) — 五步反假设流水线 checklist（作者扩展 skill 时读，agent 调用不必读）
-- 历史踩坑修复 + HTML 反模式 + OOXML 边界 → [`references/lessons-learned.md`](./references/lessons-learned.md)（agent 排查必读，原 known-issues.md 内容已并入此处）
+- 历史踩坑修复 + HTML 反模式 + OOXML 边界 → [`references/lessons-learned.md`](./references/lessons-learned.md)（agent 排查必读）

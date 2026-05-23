@@ -16,30 +16,35 @@ AUDIT_PROMPT_MD = """# Visual Audit
 ## 流程
 
 1. 读 `audit_index.json` 拿到页清单
-2. **并行 dispatch sub-agent 看图**（详见下"并行执行"）—— 每页一个 Agent，不要主 agent 一张张串行 Read
-3. 主 agent 收回各 sub-agent 的 findings 文本，按页号拼成 `audit_findings.md`（首轮）或 `audit_findings_round_N.md`（迭代轮）
+2. **按 batch 并行 dispatch sub-agent 看图**（详见下"并行执行"）—— 每个 Agent 处理 3-4 页一批
+3. 主 agent 收回各 sub-agent 的 findings 文本（每个含若干 `## page NN` 块），按页号拼成 `audit_findings.md`（首轮）或 `audit_findings_round_N.md`（迭代轮）
 4. 按 finding 修源 HTML 或 skill 代码
 5. 重跑 `convert.py`，回到第 2 步
 6. 所有页 OK 或仅剩 LOW 才交付
 
 ## 并行执行（强制）
 
-每页一个 sub-agent。理由：VLM 单图 100% 注意力比同时看 3-4 张漏判更少；并行墙钟也快 3-5×。
+按 batch 分发，每 batch 3-4 页一个 sub-agent。
 
-**何时拆 batch**：见 SKILL.md "并行 audit" 小节的页数策略表（SKILL.md 是策略单点权威源；本文件只 own sub-agent 调用细节，不重复策略决策）。
+**何时拆 batch**：见 SKILL.md "并行 audit" 小节的页数策略表。
 
-**Sub-agent 调用模板**（每页一个 Agent，全部塞在主 agent 同一条 message 里——多个 Agent 一次发才并行）：
+**Sub-agent 调用模板**（每个 Agent 一个 batch，全部塞在主 agent 同一条 message 里——多个 Agent 一次发才并行）：
 
 ```
 Agent(
-  description="Audit slide NN",
+  description="Audit slides N1-N2",
   subagent_type="general-purpose",
-  prompt='''你是单页视觉审计员。
+  prompt='''你是视觉审计员。看以下这批 compare 图（左=HTML 参考，右=PPT 输出），按顺序逐张应用检查清单。
 
-读这一张图：<full path to slide_NN_compare.png>（左=HTML 参考，右=PPT 输出）。
-按下面检查清单逐项识别 PPT 这边相对 HTML 的视觉问题，仅看这一页，不要试图读其他页或修代码。
+本批图（每张是一页）：
+- <full path to slide_N1_compare.png>
+- <full path to slide_N2_compare.png>
+- <full path to slide_N3_compare.png>
+- <full path to slide_N4_compare.png>
 
-检查清单（按重要度排序）：
+仅看这几页，不要试图读其它页或改代码。
+
+检查清单（按重要度排序，每页都过一遍）：
 1. 文字被线条 / 形状边界 / 图片角穿过 / 覆盖
 2. 文字之间不该有的重叠 / 叠压
 3. 文字溢出 slide 边界 / 被裁切 / 溢入相邻列
@@ -48,18 +53,18 @@ Agent(
 6. 图片拉伸 / 错位 / 缺失，装饰色块变形
 7. 颜色错误（明显偏离 HTML）
 
-输出**纯文本**（不要 markdown code fence 包装），严格用以下格式：
+输出**纯文本**（不要 markdown code fence 包装）：为本批每一页输出一个块，严格用以下格式：
 
-如果有问题：
+有问题的页：
 ## page NN
 - [HIGH] <一句话描述>
 - [MID]  <一句话描述>
 - [LOW]  <一句话描述>
 
-如果无问题：
+无问题的页：
 ## page NN · OK
 
-HIGH=用户一眼能看出 / MID=细看才发现 / LOW=设计美化建议。'''
+HIGH=用户一眼能看出 / MID=细看才发现 / LOW=设计美化建议。**每页都必须有一个块（OK 或带 finding），不要漏页**。'''
 )
 ```
 
