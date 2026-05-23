@@ -16,15 +16,61 @@ AUDIT_PROMPT_MD = """# Visual Audit
 ## 流程
 
 1. 读 `audit_index.json` 拿到页清单
-2. 对每页 `slide_NN_compare.png`：用 Read 工具看图（左=HTML 参考，右=PPT 输出），按下方检查清单识别问题
-3. 写 `audit_findings.md`（首轮）或 `audit_findings_round_N.md`（迭代轮）
+2. **并行 dispatch sub-agent 看图**（详见下"并行执行"）—— 每页一个 Agent，不要主 agent 一张张串行 Read
+3. 主 agent 收回各 sub-agent 的 findings 文本，按页号拼成 `audit_findings.md`（首轮）或 `audit_findings_round_N.md`（迭代轮）
 4. 按 finding 修源 HTML 或 skill 代码
 5. 重跑 `convert.py`，回到第 2 步
 6. 所有页 OK 或仅剩 LOW 才交付
 
-## 检查清单
+## 并行执行（强制）
 
-按重要度排序，每页都过：
+每页一个 sub-agent。理由：VLM 单图 100% 注意力比同时看 3-4 张漏判更少；并行墙钟也快 3-5×。
+
+按页数选策略：
+
+| slide 数 | 策略 |
+|---|---|
+| ≤ 16 | **每页一个 sub-agent**，一条消息里全部 Agent 调用并行 dispatch |
+| > 16 | 分 4-5 个 batch 并行（避免撞 API 限速 / 节省 token） |
+
+**Sub-agent 调用模板**（每页一个 Agent，全部塞在主 agent 同一条 message 里——多个 Agent 一次发才并行）：
+
+```
+Agent(
+  description="Audit slide NN",
+  subagent_type="general-purpose",
+  prompt='''你是单页视觉审计员。
+
+读这一张图：<full path to slide_NN_compare.png>（左=HTML 参考，右=PPT 输出）。
+按下面检查清单逐项识别 PPT 这边相对 HTML 的视觉问题，仅看这一页，不要试图读其他页或修代码。
+
+检查清单（按重要度排序）：
+1. 文字被线条 / 形状边界 / 图片角穿过 / 覆盖
+2. 文字之间不该有的重叠 / 叠压
+3. 文字溢出 slide 边界 / 被裁切 / 溢入相邻列
+4. 元素相对 HTML 参考图大幅错位
+5. 字体回退 / 字号变形
+6. 图片拉伸 / 错位 / 缺失，装饰色块变形
+7. 颜色错误（明显偏离 HTML）
+
+输出**纯文本**（不要 markdown code fence 包装），严格用以下格式：
+
+如果有问题：
+## page NN
+- [HIGH] <一句话描述>
+- [MID]  <一句话描述>
+- [LOW]  <一句话描述>
+
+如果无问题：
+## page NN · OK
+
+HIGH=用户一眼能看出 / MID=细看才发现 / LOW=设计美化建议。'''
+)
+```
+
+**关键**：sub-agent 只返回 findings 文本，**不要让它直接写 audit_findings.md**——多个并发写会互相覆盖。主 agent 统一合并。
+
+## 检查清单（同上，给主 agent 复核用）
 
 1. 文字被线条 / 形状边界 / 图片角穿过 / 覆盖
 2. 文字之间不该有的重叠 / 叠压

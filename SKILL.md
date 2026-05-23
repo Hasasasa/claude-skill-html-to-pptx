@@ -64,7 +64,7 @@ convert.py 跑完不等于交付完成。完整流程：
 convert.py
   → Stage 5a 结构化自检（OOXML 扫描，给提示）
   → Stage 5b 自动产出 <out>_audit/ 物料（HTML|PPT 双栏对比图 + audit_prompt.md）
-  → 逐页 Read compare 图，按 audit_prompt.md 检查清单写 audit_findings.md
+  → 【并行 audit】每页一个 sub-agent 看 compare 图返回 findings，主 agent 合并写 audit_findings.md（细节见下"并行 audit"）
   → 按 finding 修源 HTML（首选）或 skill 代码
   → 重跑 convert + 重做 audit（findings_round_2.md ...）
   → 所有页 OK 或仅剩 LOW
@@ -74,6 +74,54 @@ convert.py
 ```
 
 跳过 Stage 5b = 工作未完成。每次 convert 都会产出 audit 物料，直接读 `<out>_audit/audit_prompt.md` 即可。
+
+### 并行 audit（强制策略）
+
+每页独立 sub-agent 看 compare 图——VLM 单图 100% 注意力，比批量看 3-4 张时漏判更少；并行执行墙钟也快 3-5×。
+
+按页数选策略：
+
+| slide 数 | 策略 |
+|---|---|
+| ≤ 16 | **每页一个 sub-agent**，一条消息里全部 Agent 并行 dispatch |
+| > 16 | 分 4-5 个 batch 并行（避免撞 API 限速 / 节省 token） |
+
+**Sub-agent 调用模板**（每个 slide 一个 Agent tool 调用，全部塞在主 agent 的同一条 message 里——多个 Agent 一次发出去才并行）：
+
+```
+Agent(
+  description="Audit slide NN",
+  subagent_type="general-purpose",
+  prompt="""你是单页视觉审计员。
+
+读这一张图：<out>_audit/slide_NN_compare.png（左=HTML 参考，右=PPT 输出）。
+按下面检查清单逐项识别 PPT 这边相对 HTML 的视觉问题，仅看这一页，不要试图读其他页或修代码。
+
+检查清单（按重要度排序）：
+1. 文字被线条 / 形状边界 / 图片角穿过 / 覆盖
+2. 文字之间不该有的重叠 / 叠压
+3. 文字溢出 slide 边界 / 被裁切 / 溢入相邻列
+4. 元素相对 HTML 参考图大幅错位
+5. 字体回退 / 字号变形
+6. 图片拉伸 / 错位 / 缺失，装饰色块变形
+7. 颜色错误（明显偏离 HTML）
+
+输出**纯文本**（不要 markdown 包装），严格用以下格式：
+
+如果有问题：
+## page NN
+- [HIGH] <一句话描述>
+- [MID]  <一句话描述>
+- [LOW]  <一句话描述>
+
+如果无问题：
+## page NN · OK
+
+HIGH=用户一眼能看出 / MID=细看才发现 / LOW=设计美化建议。"""
+)
+```
+
+主 agent 收回所有 sub-agent 的返回文本后，按页号顺序拼成 `audit_findings.md`（首轮）或 `audit_findings_round_N.md`（迭代轮）。**不要让 sub-agent 直接写文件**——并发写会互相覆盖。
 
 **交付前必须 cleanup**：audit 物料是 agent 工作用的中间产物，用户只要 .pptx。最终一行命令 `python convert.py <out>.pptx --cleanup` 会把同目录下 `<out>_audit/`、`<out>_measurements*`、`<out>_preflight.json` 全部删干净，目录里只剩 `<out>.pptx`。
 
