@@ -100,6 +100,10 @@ GENERIC_FONT_KEYWORDS = {
     "serif", "sans-serif", "monospace", "cursive", "fantasy",
     "system-ui", "ui-serif", "ui-sans-serif", "ui-monospace",
     "math", "emoji", "fangsong",
+    # 平台系统 UI 字体别名：CSS 端是关键字（解析为当前 OS 系统字体），
+    # 但 OOXML typeface= 写它们 PowerPoint/WPS 找不到真实字体，会落到默认 fallback
+    # 并对 b="1" run 做 faux-bold 双绘（字符堆积）。当作 generic 跳过即可。
+    "-apple-system", "blinkmacsystemfont", "-webkit-system-font",
 }
 
 

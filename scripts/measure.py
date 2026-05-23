@@ -230,7 +230,9 @@ EXTRACT_JS = r"""
         });
         // overflow:hidden 裁切容器：容器 PNG 已经包含被裁后的子装饰，子不再单独处理
         // （否则旋转子的 AABB 远大于裁切框，单独画会变成超大色块覆盖周围）
-        if (isClippingContainerWithTransformedChildren(s, el)) {
+        // 例外：slide 根节点。slide 根的 overflow:hidden 是布局结构（裁视口），
+        // 不是"装饰裁切意图"。若 slide 根本身命中此分支会吞掉所有 text/svg 子记录。
+        if (el !== slide && isClippingContainerWithTransformedChildren(s, el)) {
           return;
         }
         // 其他情况（背景图 / box-shadow / 伪元素装饰）：子节点继续画在截图之上

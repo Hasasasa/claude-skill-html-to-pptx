@@ -37,11 +37,6 @@ FONT_PLAN: list[dict] = []
 
 # === 派生 helper，给 assemble.py / preflight.py 用 ===
 
-def bundled_typefaces() -> set[str]:
-    """所有内置 typeface 名（保留大小写）。"""
-    return {p["typeface"] for p in FONT_PLAN}
-
-
 def bundled_family_names_lower() -> set[str]:
     """所有可被 CSS font-family 命中的内置名（typeface + aliases），全小写。
     给 preflight.py 判定"是否非内置字体"用。"""

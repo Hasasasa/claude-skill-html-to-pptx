@@ -63,8 +63,8 @@ convert.py 跑完不等于交付完成。完整流程：
 ```
 convert.py
   → Stage 5a 结构化自检（OOXML 扫描，给提示）
-  → Stage 5b 自动产出 <out>_audit/ 物料（HTML|PPT 双栏对比图 + audit_prompt.md）
-  → 【并行 audit】每页一个 sub-agent 看 compare 图返回 findings，主 agent 合并写 audit_findings.md（细节见下"并行 audit"）
+  → Stage 5b 视觉 audit 物料 — 需要 PowerPoint COM 或 LibreOffice 渲染器
+  → 【并行 audit】每页一个 sub-agent 看 compare 图返回 findings，主 agent 合并写 audit_findings.md
   → 按 finding 修源 HTML（首选）或 skill 代码
   → 重跑 convert + 重做 audit（findings_round_2.md ...）
   → 所有页 OK 或仅剩 LOW
@@ -73,11 +73,26 @@ convert.py
   → 把 .pptx 路径交付给用户
 ```
 
-跳过 Stage 5b = 工作未完成。每次 convert 都会产出 audit 物料，直接读 `<out>_audit/audit_prompt.md` 即可。
+### 渲染器要求（Stage 5b 前置条件）
 
-### 并行 audit（强制策略）
+Stage 5b 视觉 audit 需要把 .pptx 渲染成 PNG，依赖：
+- **PowerPoint COM**（Windows + Office + `pywin32`），或
+- **LibreOffice**（跨平台，配 `pip install pdf2image`）
 
-每页独立 sub-agent 看 compare 图——VLM 单图 100% 注意力，比批量看 3-4 张时漏判更少；并行执行墙钟也快 3-5×。
+任一可用就能跑 audit。convert 输出里看到 `[self-check] 跳过：找不到可用的 pptx 渲染器`，说明两个都没装——此时 audit **不会**产出 compare 图，Stage 5b 直接跳过。
+
+**这种情况下 agent 必须 ask 用户**（不要静默交付未审计的 pptx）：
+
+> "你机器上没装 PowerPoint 也没装 LibreOffice，视觉 audit 跑不了，PPT 可能有看不出的视觉 bug。三个选择：
+> 1. 装 LibreOffice（推荐，跨平台，2-3 分钟）：`winget install LibreOffice.LibreOffice`（Windows）/ `brew install --cask libreoffice`（mac）/ `apt install libreoffice`（Linux），然后 `pip install pdf2image`，重跑 convert
+> 2. 跳过 audit 直接交付（接受 PPT 可能有视觉 bug 的风险）
+> 3. 在已经装了 Office 的另一台机器上重跑"
+
+用户选 1 → 等他装完重跑；选 2 → 加 `--no-visual-audit` 跑一遍，把告知风险后交付；选 3 → 把当前目录 + HTML 发给他。
+
+### 并行 audit（前提：5b 跑起来了）
+
+每页独立 sub-agent 看 compare 图——VLM 单图 100% 注意力，比批量看 3-4 张时漏判更少；并行执行墙钟也快 3-5×。完整 sub-agent 调用模板 + 检查清单 + findings 格式见 `<out>_audit/audit_prompt.md`（每次 convert 自动产出，单一权威源）。
 
 按页数选策略：
 
@@ -86,42 +101,7 @@ convert.py
 | ≤ 16 | **每页一个 sub-agent**，一条消息里全部 Agent 并行 dispatch |
 | > 16 | 分 4-5 个 batch 并行（避免撞 API 限速 / 节省 token） |
 
-**Sub-agent 调用模板**（每个 slide 一个 Agent tool 调用，全部塞在主 agent 的同一条 message 里——多个 Agent 一次发出去才并行）：
-
-```
-Agent(
-  description="Audit slide NN",
-  subagent_type="general-purpose",
-  prompt="""你是单页视觉审计员。
-
-读这一张图：<out>_audit/slide_NN_compare.png（左=HTML 参考，右=PPT 输出）。
-按下面检查清单逐项识别 PPT 这边相对 HTML 的视觉问题，仅看这一页，不要试图读其他页或修代码。
-
-检查清单（按重要度排序）：
-1. 文字被线条 / 形状边界 / 图片角穿过 / 覆盖
-2. 文字之间不该有的重叠 / 叠压
-3. 文字溢出 slide 边界 / 被裁切 / 溢入相邻列
-4. 元素相对 HTML 参考图大幅错位
-5. 字体回退 / 字号变形
-6. 图片拉伸 / 错位 / 缺失，装饰色块变形
-7. 颜色错误（明显偏离 HTML）
-
-输出**纯文本**（不要 markdown 包装），严格用以下格式：
-
-如果有问题：
-## page NN
-- [HIGH] <一句话描述>
-- [MID]  <一句话描述>
-- [LOW]  <一句话描述>
-
-如果无问题：
-## page NN · OK
-
-HIGH=用户一眼能看出 / MID=细看才发现 / LOW=设计美化建议。"""
-)
-```
-
-主 agent 收回所有 sub-agent 的返回文本后，按页号顺序拼成 `audit_findings.md`（首轮）或 `audit_findings_round_N.md`（迭代轮）。**不要让 sub-agent 直接写文件**——并发写会互相覆盖。
+**关键**：sub-agent 只返回 findings 文本，主 agent 统一合并写 `audit_findings.md`。多个并发写文件会互相覆盖。
 
 **交付前必须 cleanup**：audit 物料是 agent 工作用的中间产物，用户只要 .pptx。最终一行命令 `python convert.py <out>.pptx --cleanup` 会把同目录下 `<out>_audit/`、`<out>_measurements*`、`<out>_preflight.json` 全部删干净，目录里只剩 `<out>.pptx`。
 

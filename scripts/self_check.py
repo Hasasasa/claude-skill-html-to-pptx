@@ -358,12 +358,29 @@ def self_check(pptx_path: Path, html_screenshots_dir: Path,
         if engine is None:
             result["skipped"] = "no-renderer"
             if verbose:
-                print("[self-check] 跳过：找不到可用的 pptx 渲染器")
-                print(f"           尝试结果: {errors}")
-                print("           提示：在 Windows 上装 Office 即可启用 PPT 渲染；"
-                      "或装 LibreOffice + `pip install pdf2image` 跨平台启用")
+                print()
+                print("=" * 72)
+                print("[self-check] ❗ 缺少 pptx 渲染器 — Stage 5b 视觉 audit 跑不了")
+                print("=" * 72)
+                print(f"  尝试结果: {errors}")
+                print()
+                print("  视觉 audit 是必需的（PPT 可能有 OOXML 转换层看不出的视觉 bug）。")
+                print("  agent 必须在交付前 ask 用户选择以下之一：")
+                print()
+                print("  1) 装 LibreOffice（推荐，跨平台 2-3 分钟）：")
+                print("     Windows : winget install LibreOffice.LibreOffice")
+                print("     macOS   : brew install --cask libreoffice")
+                print("     Linux   : sudo apt install libreoffice")
+                print("     全平台还要：pip install pdf2image  （Windows 装 poppler 见 pdf2image README）")
+                print("     装完重跑 convert.py")
+                print()
+                print("  2) 跳过 audit 直接交付（接受 PPT 可能有视觉 bug 的风险）：")
+                print("     convert.py … --no-visual-audit")
+                print()
+                print("  3) 在已装 Office / LibreOffice 的另一台机器上重跑")
+                print("=" * 72)
                 if result["layout_warnings"]:
-                    print(f"[self-check] !! {len(result['layout_warnings'])} 处文本框横向重叠")
+                    print(f"[self-check] !! {len(result['layout_warnings'])} 处文本框横向重叠（Stage 5a 结构化告警仍有效）")
             return result
 
         result["engine"] = engine
