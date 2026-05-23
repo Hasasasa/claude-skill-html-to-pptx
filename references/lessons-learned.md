@@ -2,6 +2,16 @@
 
 Use this file to choose the next debugging step after checking the self-check report and compare image. Entries are not final conclusions; they are prior fixes and likely inspection points.
 
+## What goes here (and what doesn't)
+
+This file is the **shared knowledge base** for HTML 反模式 (`HTML Anti-Patterns`) and OOXML 表达力边界 (`OOXML Limits`)—patterns where the right fix is **changing the source HTML**, not the skill code.
+
+Existing sections below (Adapter, Text Extraction, Shapes, Fonts, Layout, etc.) are the **skill's debug history**—they record where past skill changes happened so future debugging can locate similar root causes faster. They are kept for diagnostic value, but **do not add new "skill bug → patched in measure.py" entries**. Per the SKILL.md "沉淀 HTML 问题与 OOXML 边界" policy:
+
+- New shared entries go into the **HTML Anti-Patterns** or **OOXML Limits** sections at the bottom of this file.
+- Skill-internal bugs (same CSS pattern breaks across decks) are **not patched ad-hoc** by agents. The current deck gets an HTML workaround; the agent reports the pattern to the user so the maintainer can decide whether to raise skill abstraction.
+- Project / customer-specific patterns go into `lessons-learned-local.md` (gitignored).
+
 ## Quick Triage
 
 1. Missing or blank slide: check adapter activation and hidden-state cleanup.
@@ -89,8 +99,26 @@ Use this file to choose the next debugging step after checking the self-check re
 | Symptom | Likely Cause | Inspect / Fix |
 |---|---|---|
 | Stage 5a skipped — "找不到可用的 pptx 渲染器" | PowerPoint COM and LibreOffice both unavailable | Install Office (Windows) or `apt install libreoffice` + `pip install pdf2image`. Without a renderer, Stage 5b audit cannot run either. |
-| Stage 5a FULL-PIC warning | A `<p:pic>` covers ≥ ~98% of the slide — likely `deco_snapshot` double-layer bug | Check measure.py hide-before-screenshot logic for the offending slide; see `project_html_to_pptx_deco_snapshot_bug` memory. |
+| Stage 5a FULL-PIC warning | A `<p:pic>` covers ≥ ~98% of the slide — likely `deco_snapshot` double-layer bug | Inspect via `dump_records.py`; if confirmed, this is a skill-abstraction gap—apply an HTML workaround for the current deck and report to the maintainer. |
 | Stage 5a LAYOUT warning | Two PPT text boxes overlap horizontally while HTML measurements show them apart | Inspect the slide's records via `dump_records.py`; usually a flex/grid gap got collapsed or font metrics differ enough to trigger. |
+
+## HTML Anti-Patterns（HTML 反模式）
+
+写源 HTML 时直接避开的通用模式。**新增 HTML 反模式条目放这里**。
+
+| Pattern | Why it breaks PPT | HTML rewrite |
+|---|---|---|
+| _（待补充——任何写法导致跨 deck 转换失真的，沉到此处）_ | | |
+
+## OOXML Limits（OOXML 表达力边界）
+
+OOXML / PPT 渲染器天然无法精确表达的 CSS / DOM 模式。**新增 OOXML 边界条目放这里**。HTML 端必须走替代通路。
+
+| CSS / DOM 模式 | OOXML 缺什么 | HTML 替代通路 |
+|---|---|---|
+| 彩色 emoji（COLR/CPAL 字体） | PowerPoint / WPS 字形渲染不支持彩色字体 | 换 Twemoji SVG `<img src="cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/{cp}.svg">` + `.emoji-img { width:1em; height:1em; vertical-align:-0.125em; }`；走 img screenshot 通道 |
+| CSS `background-clip: text + linear-gradient` 文字渐变 | OOXML 文字 fill 只支持纯色/图案，没有 text gradient clip 原语 | 换 inline `<svg>` + `<text fill="url(#grad)">` + `<linearGradient>`；走 SVG screenshot 通道。viewBox 给宽裕（如 320×64），`text-anchor="middle"` + `x="50%"` 居中 |
+| `backdrop-filter: blur` / 复杂 filter | OOXML 无对应原语 | skill 已自动让该容器走 deco_snapshot 像素截图（无需 HTML 改）；若效果不接受则改 HTML 用纯背景色替代 |
 
 ## Debug Commands
 
@@ -101,4 +129,4 @@ python <skill_dir>/convert.py <input.html> --keep-screenshots
 python <skill_dir>/scripts/dump_records.py <measurements.json> <slide_idx>
 ```
 
-`--keep-screenshots` retains HTML reference PNGs + `measurements.json` + `preflight.json` next to the output `.pptx`. Stage 5b audit material is produced unconditionally in `<out>_audit/` unless `--no-visual-audit` is set.
+`--keep-screenshots` retains HTML reference PNGs + `measurements.json` + `preflight.json` next to the output `.pptx`. Stage 5b audit material lands in `<out>_audit/` when a PPT renderer (PowerPoint COM / LibreOffice) is available and `--no-visual-audit` is not set; otherwise 5b is skipped (see SKILL.md "渲染器要求").

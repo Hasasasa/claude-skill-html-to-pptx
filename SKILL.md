@@ -68,7 +68,7 @@ convert.py
   → 按 finding 修源 HTML（首选）或 skill 代码
   → 重跑 convert + 重做 audit（findings_round_2.md ...）
   → 所有页 OK 或仅剩 LOW
-  → 【若改了 skill 代码或撞了新模式】沉淀到 lessons-learned + memory，见下方"让 skill 越用越好"
+  → 【若撞到 HTML 反模式 / 新 OOXML 边界】沉淀到 lessons-learned，见下方"沉淀 HTML 问题与 OOXML 边界"
   → python convert.py <out>.pptx --cleanup  ← 删 audit/measurement/preflight 工作物
   → 把 .pptx 路径交付给用户
 ```
@@ -92,7 +92,7 @@ Stage 5b 视觉 audit 需要把 .pptx 渲染成 PNG，依赖：
 
 ### 并行 audit（前提：5b 跑起来了）
 
-每页独立 sub-agent 看 compare 图——VLM 单图 100% 注意力，比批量看 3-4 张时漏判更少；并行执行墙钟也快 3-5×。完整 sub-agent 调用模板 + 检查清单 + findings 格式见 `<out>_audit/audit_prompt.md`（5b 跑通时和 compare 图一起产出，是单一权威源——SKILL.md 不重复维护这些细节）。
+每页独立 sub-agent 看 compare 图。完整 sub-agent 调用模板 + 检查清单 + findings 格式见 `<out>_audit/audit_prompt.md`（5b 跑通时和 compare 图一起产出，是单一权威源）。
 
 按页数选策略：
 
@@ -105,57 +105,49 @@ Stage 5b 视觉 audit 需要把 .pptx 渲染成 PNG，依赖：
 
 **交付前必须 cleanup**：audit 物料是 agent 工作用的中间产物，用户只要 .pptx。最终一行命令 `python convert.py <out>.pptx --cleanup` 会把同目录下 `<out>_audit/`、`<out>_measurements*`、`<out>_preflight.json` 全部删干净，目录里只剩 `<out>.pptx`。
 
-## 让 skill 越用越好（强制）
+## 沉淀 HTML 问题与 OOXML 边界（强制）
 
-你的角色是"使用 + 维护 skill 双重"，不是单纯调用工具。skill 是工具集 + 沉淀的知识库。**每次撞 bug 都是改进机会；改了 skill 不沉淀 = 下次同模式重做几十分钟调查**。
+你的角色是**调用 + 用法沉淀**，不是修 skill。skill 代码追求抽象 + 全面，能力驱动而非补丁累积——发现 skill 内部 bug 时**不要原地改 measure.py / assemble.py**，那是作者的 PR review 心态决定的事，agent 局部补丁会破坏其他 deck 的平衡。
 
-### 判定：这是 skill bug、HTML 问题，还是 OOXML 边界？
+只沉淀两类：
 
-按这个表决定改哪里：
+### 1. HTML 写法问题（用户的 HTML 让转换失真）
 
-| 情况 | 类别 | 怎么修 |
+| 类别 | 判定 | 做什么 |
 |---|---|---|
-| 只在这个 HTML 出现，改 HTML 一两行就能解决 | **HTML 问题** | 改 HTML 源（不动 skill） |
-| HTML 端渲染正常 + PPT 异常，且换个 deck 用同种 CSS 模式还会撞 | **skill bug** | 改 skill 代码 + **必须沉淀** |
-| OOXML / PPT 渲染器天然不支持（彩色 emoji / CSS 文字渐变 / filter:blur / 复杂 mask） | **OOXML 边界** | 改 HTML 源走替代通路（SVG / `<img>`） + 沉到 lessons-learned 的"HTML 写法规避"区 |
+| 单次 case（只在这 deck 出现，改一两行 HTML 就好） | 单页特例 | 直接改 HTML 源；不沉，不通报 |
+| 通用 HTML 反模式（任何人写类似 HTML 都会踩） | 跨 deck | 改 HTML + 沉到 `references/lessons-learned.md` 的 "HTML 写法规避" 区 |
 
-**判定标准**：能不能描述出"任何用了 X 模式的 deck 都会撞"——能 = skill bug 或 OOXML 边界，不能 = HTML 问题。
+### 2. OOXML 表达力边界（PowerPoint / OOXML 天然不支持）
 
-### 撞 skill bug 时的完整闭环（不可跳）
+典型：彩色 emoji、CSS `background-clip: text` 文字渐变、`filter: blur` / 复杂 mask、`backdrop-filter` 之类。
 
-1. **dump_records 先定位**：`python scripts/dump_records.py <out>_measurements.json <slide_idx>` —— 1 秒看出哪个 record 的 kind / rect / 字段不对。比看 audit 图快 10 倍
-2. **改 skill 代码**：measure.py / assemble.py / 对应模块。最小 surgical 改动，不顺手重构
-3. **重跑 convert + audit**：确认修好 + 不引入回归（看其他几张可能受影响的 slide）
-4. **沉到 `references/lessons-learned.md`**：在对应 section 加一行 `\| 症状 \| 根因 \| Inspect / Fix \|`。**写症状要写未来 agent 能搜到的关键词**（"装饰彩条变成超大色块"比"slide 01 不对"有用）
-5. **沉到 memory**（每个会话有自己的 memory 目录，路径见会话开始的 system context；写 `project_html_to_pptx_<short_topic>.md`）：
-   - 症状 + 根因 + 修法
-   - `**Why**` 段：为什么这个修法是对的（不是 hack）
-   - `**How to apply**` 段：未来 agent 看到什么症状要查这条
-   - 用 `[[other-memory-name]]` 链相关 memory
-6. **更新 `MEMORY.md` 索引**：加一行指向新 memory 文件
+改 HTML 走替代通路（Twemoji SVG `<img>` / inline `<svg><text fill="url(#grad)">` / 让容器走 deco_snapshot 截图）+ 沉到 `references/lessons-learned.md` 的 "OOXML 边界" 区。
 
-### 撞 OOXML 边界时（HTML 端改写策略）
-
-OOXML 文字端 / 图像端有表达力天花板，改 skill 也修不了。这时改 HTML 源 + 沉到 lessons-learned 的"OOXML 边界 → HTML 写法规避"区，让未来用户 / agent 写 HTML 时直接避开。
-
-已沉的边界（搜 lessons-learned 验证当前最新版）：
-- 彩色 emoji → 换 Twemoji SVG `<img>`（CDN 路径见 lessons-learned）
-- CSS 文字渐变（`background-clip: text`）→ 换 inline `<svg><text fill="url(#grad)">`
+已沉的边界（搜 lessons-learned 验证最新版）：
+- 彩色 emoji → Twemoji SVG `<img>`
+- CSS 文字渐变 → inline `<svg><text fill="url(#grad)">`
 - backdrop-filter / 复杂 filter → 让该容器走 deco_snapshot 截图
 
-### 共享 vs 本地：沉到哪一边
+### 看似 skill 内 bug 怎么处理（**不修不沉**）
 
-skill 是分发型项目，未来会有上游更新（git pull / 重装包）。沉淀分两层，写错地方会被覆盖：
+发现某症状用同种 CSS 模式换 deck 还会撞、且不在已知 OOXML 边界内 → 这是 skill 抽象不到位。**不要原地改 skill 代码**。做这两件事：
+
+1. 当前 deck **走 HTML 端 workaround** 把 finding 修掉（让用户拿到能交付的 PPT）
+2. **明确告知用户**："发现一个看起来是 skill 内的通用 bug：[症状 + 触发 CSS 模式 + 当前 workaround]。建议作者按 issue 收录，让 skill 在 measure/assemble 里更通用地处理这种模式"
+
+理由：agent 局部改 skill 是补丁思维；skill 的演进应该是作者按"提升抽象"的心态做的——不是 agent 调用一次就触发一次 patch。
+
+### 共享 vs 本地：HTML/OOXML 沉淀到哪一边
 
 | 内容 | 写到哪 | 上游 skill 更新时 |
 |---|---|---|
-| 跨 deck 通用 bug 修法（适合让所有用户受益） | `references/lessons-learned.md` | **会被覆盖**——要么 PR 上游，要么备份后手动合并 |
-| 本地业务 / 特定客户的 deck 模式、行业 hack | `references/lessons-learned-local.md`（gitignored） | **不会**被覆盖。文件不存在就 new 一个，schema 跟 lessons-learned 一致 |
-| 用户身份 / 项目背景 / 反复出现的偏好 | cwd memory（`~/.claude/projects/<cwd-hash>/memory/`） | **不会**被覆盖（物理隔离在 skill 目录之外） |
+| 通用 HTML 反模式 / OOXML 边界（让所有用户受益） | `references/lessons-learned.md` | **会被覆盖**——PR 上游，或备份后手动合并 |
+| 本地业务 / 特定客户专有写法 | `references/lessons-learned-local.md`（gitignored） | **不会**被覆盖。文件不存在就 new 一个，schema 跟 lessons-learned 一致 |
 
-**判定**：撞的 bug 是不是"任何人写类似 HTML 都会撞"？是 → `lessons-learned.md`（PR 给所有人）；只在我们业务/客户场景出现 → `lessons-learned-local.md`；不是 bug 而是项目/团队 context → memory。
+**判定**：任何人写类似 HTML 都会踩？是 → `lessons-learned.md`；只在我们业务/客户场景出现 → `lessons-learned-local.md`。
 
-排查时按顺序搜：`lessons-learned.md` → `lessons-learned-local.md`（如果存在）→ 当前 cwd memory。三者命中任一即可。
+排查时按顺序搜：`lessons-learned.md` → `lessons-learned-local.md`（如果存在）。两者命中任一即可。
 
 ## 流水线
 
@@ -210,8 +202,8 @@ skill 是分发型项目，未来会有上游更新（git pull / 重装包）。
 
 1. 看 Stage 5a 自检报告：哪几页被告警
 2. 看 Stage 5b audit compare 图：用 Read 工具逐页对照
-3. 搜 `references/lessons-learned.md` 已知症状
-4. HTML 正常、PPT 异常且不符合已知边界 → 改 skill 代码
+3. 搜 `references/lessons-learned.md` 已知症状（HTML 反模式 / OOXML 边界）
+4. HTML 正常、PPT 异常且不符合已知边界 → 看是不是 skill 抽象不到位（按"看似 skill 内 bug 怎么处理"流程：HTML workaround 修当前 deck + 告知用户提 issue）
 
 ## 引用
 
