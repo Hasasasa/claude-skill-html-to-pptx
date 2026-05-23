@@ -207,6 +207,5 @@ Stage 5b 视觉 audit 需要把 .pptx 渲染成 PNG，依赖：
 
 ## 引用
 
-- 维护扩展必读 → [`references/methodology.md`](./references/methodology.md) — 五步反假设流水线 checklist
-- 历史踩坑修复 → [`references/lessons-learned.md`](./references/lessons-learned.md)
-- 通用边界清单 → [`references/known-issues.md`](./references/known-issues.md)
+- 维护扩展必读 → [`references/methodology.md`](./references/methodology.md) — 五步反假设流水线 checklist（作者扩展 skill 时读，agent 调用不必读）
+- 历史踩坑修复 + HTML 反模式 + OOXML 边界 → [`references/lessons-learned.md`](./references/lessons-learned.md)（agent 排查必读，原 known-issues.md 内容已并入此处）
