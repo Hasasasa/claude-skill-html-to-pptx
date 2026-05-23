@@ -1,0 +1,16 @@
+# 本地沉淀，每个用户/团队各自维护，不上游
+references/lessons-learned-local.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 临时调试 / agent 工作残留（**不要**用 `_*.py` 这种宽 glob，会误吞 `_helpers.py`/`_snippets.py` 等真实模块）
+*_dump_*.py
+_scratch_*.py
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db

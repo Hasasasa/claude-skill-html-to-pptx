@@ -1,0 +1,22 @@
+# Local Lessons Learned（本地沉淀，不上游）
+
+复制此文件为 `lessons-learned-local.md`，把只在你自己业务 / 客户场景遇到的 deck 模式 + 修法写进去。
+
+**为什么单独一个文件**：`lessons-learned.md` 是 skill 自带的，上游更新会覆盖。本文件 gitignored，永远是你的本地内容，不会被覆盖。
+
+**何时用 local 而不用 lessons-learned.md**：
+- 修法是行业/客户特有的 hack（不通用，PR 上游会被拒）
+- 还在试验中，没验证够格写进 lessons-learned
+- 本地 fork 修了 skill 代码，但暂时不想推上游
+
+**schema 跟 lessons-learned.md 一致**——按 section + 表格写，让 agent 排查时能搜到。
+
+---
+
+## 示例（删掉这一段，填你自己的）
+
+### Layout / Anchor
+
+| Symptom | Likely Cause | Inspect / Fix |
+|---|---|---|
+| 某 deck 模板（XX 客户的 quarterly review）第 X 页底部 footer 永远飘到 y=820 | 客户 HTML 用了一种自定义 `bottom: calc(...)` 公式，BCR 跟可视位置差 60px | assemble 端为该 className 加 hardcoded y 偏移；或推动客户改 HTML 用纯 `position:absolute; bottom:0` |
