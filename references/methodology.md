@@ -92,7 +92,7 @@
 - 视觉判断外包给 VLM
 - 5a 通过 ≠ 视觉可用，必须人工或 VLM 复核
 
-**断言**：5a 三类告警都记录；5b findings 写完每页要么 OK 要么有问题描述；HIGH/MID 全修完或归入 known-boundaries 告知用户。
+**断言**：5a 三类告警都记录；5b findings 写完每页要么 OK 要么有问题描述；HIGH/MID 全修完或归入 lessons-learned 的 OOXML Limits 段并告知用户。
 
 ---
 
