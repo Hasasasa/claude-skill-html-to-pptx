@@ -65,7 +65,7 @@ convert.py
   → Stage 5a 结构化自检（OOXML 扫描，给提示）
   → Stage 5b 视觉 audit 物料 — 需要 PowerPoint COM 或 LibreOffice 渲染器
   → 【并行 audit】按 batch（4 页/batch）并行 sub-agent 看 compare 图返回 findings，主 agent 合并写 audit_findings.md
-  → 按 finding 修源 HTML（首选）或 skill 代码
+  → 按 finding 逐项做最小局部 HTML 修改（见下"修复纪律"）
   → 重跑 convert + 重做 audit（findings_round_2.md ...）
   → 所有页 OK 或仅剩 LOW
   → 【若撞到 HTML 反模式 / 新 OOXML 边界】沉淀到 lessons-learned，见下方"沉淀 HTML 问题与 OOXML 边界"
@@ -103,6 +103,18 @@ Stage 5b 视觉 audit 需要把 .pptx 渲染成 PNG，依赖：
 | > 20 | 每 batch 4-5 页 |
 
 sub-agent 只返回 findings 文本（含每页的 `## page NN` 块），主 agent 统一合并写 `audit_findings.md`。多个并发写文件会互相覆盖。
+
+### 修复纪律（针对 finding，不追根因）
+
+收到 `audit_findings.md` 之后，**逐项**做最小局部 HTML 修改：
+
+- 每个 finding 只改"让它消失"的那一处，改完立刻进下一个 finding
+- **不**追溯"为什么字体回退 / 为什么布局偏移"的深层根因
+- **不**做"我顺手把 .footer 也改成绝对定位"这种 finding 列表外的优化
+- **不**跨 finding 做结构性重构（"统一把所有 slide 的 font-family 显式声明"≠ 单个 finding 的最小修复）
+- 同一 finding 反复试改 ≥ 2 次仍不 OK，停下来告诉用户，**不要**继续扩大改动面
+
+判定标准：你的 diff 行数 ≤ findings 数 × 3 行。超过这个量级说明在"乱发挥"。
 
 **交付前必须 cleanup**：audit 物料是 agent 工作用的中间产物，用户只要 .pptx。最终一行命令 `python convert.py <out>.pptx --cleanup` 会把同目录下 `<out>_audit/`、`<out>_measurements*`、`<out>_preflight.json` 全部删干净，目录里只剩 `<out>.pptx`。
 
