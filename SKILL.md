@@ -92,7 +92,7 @@ Stage 5b 视觉 audit 需要把 .pptx 渲染成 PNG，依赖：
 
 ### 并行 audit（前提：5b 跑起来了）
 
-每页独立 sub-agent 看 compare 图——VLM 单图 100% 注意力，比批量看 3-4 张时漏判更少；并行执行墙钟也快 3-5×。完整 sub-agent 调用模板 + 检查清单 + findings 格式见 `<out>_audit/audit_prompt.md`（每次 convert 自动产出，单一权威源）。
+每页独立 sub-agent 看 compare 图——VLM 单图 100% 注意力，比批量看 3-4 张时漏判更少；并行执行墙钟也快 3-5×。完整 sub-agent 调用模板 + 检查清单 + findings 格式见 `<out>_audit/audit_prompt.md`（5b 跑通时和 compare 图一起产出，是单一权威源——SKILL.md 不重复维护这些细节）。
 
 按页数选策略：
 
@@ -175,12 +175,12 @@ skill 是分发型项目，未来会有上游更新（git pull / 重装包）。
 
 **不做像素 diff** —— 像素 diff 数字对局部 bug 不敏感，会给假信心。视觉判断完全交 5b。
 
-**Stage 5b visual_audit**：产出 `<out>_audit/`：
+**Stage 5b visual_audit**（**需要 PowerPoint COM 或 LibreOffice 渲染器**，见上"渲染器要求"）：产出 `<out>_audit/`：
 - `slide_NN_compare.png` × N（HTML | PPT 双栏拼图）
 - `audit_index.json`（每页元数据 + 结构化告警）
-- `audit_prompt.md`（给你的检查清单）
+- `audit_prompt.md`（给你的检查清单 + sub-agent 调用模板）
 
-照着 audit_prompt.md 做，写 `audit_findings.md`。
+照着 audit_prompt.md 做，写 `audit_findings.md`。无渲染器时 5b 跳过——按上面"渲染器要求"小节 ask 用户。
 
 ## 调用前确认
 

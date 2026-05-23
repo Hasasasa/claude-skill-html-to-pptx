@@ -26,12 +26,7 @@ AUDIT_PROMPT_MD = """# Visual Audit
 
 每页一个 sub-agent。理由：VLM 单图 100% 注意力比同时看 3-4 张漏判更少；并行墙钟也快 3-5×。
 
-按页数选策略：
-
-| slide 数 | 策略 |
-|---|---|
-| ≤ 16 | **每页一个 sub-agent**，一条消息里全部 Agent 调用并行 dispatch |
-| > 16 | 分 4-5 个 batch 并行（避免撞 API 限速 / 节省 token） |
+**何时拆 batch**：见 SKILL.md "并行 audit" 小节的页数策略表（SKILL.md 是策略单点权威源；本文件只 own sub-agent 调用细节，不重复策略决策）。
 
 **Sub-agent 调用模板**（每页一个 Agent，全部塞在主 agent 同一条 message 里——多个 Agent 一次发才并行）：
 

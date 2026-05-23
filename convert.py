@@ -240,8 +240,9 @@ def main():
                     help="跳过转换前的风险预扫（Stage 1）；预扫会标出已知踩坑模式并把"
                          "高风险页强制纳入自检告警")
     ap.add_argument("--no-visual-audit", action="store_true",
-                    help="跳过 Stage 5b 视觉审计物料产出。默认开启视觉 audit："
-                         "产出每页 HTML|PPT 双栏对比图 + audit_index.json + audit_prompt.md，"
+                    help="跳过 Stage 5b 视觉审计物料产出。默认开启视觉 audit，但**前提是有 pptx 渲染器**"
+                         "（PowerPoint COM 或 LibreOffice）；都没装 5b 会自动跳过并打安装指引。"
+                         "渲染器在位时产出每页 HTML|PPT 双栏对比图 + audit_index.json + audit_prompt.md，"
                          "**调用 skill 的 agent 必须**逐页对比识别问题、迭代修复，直到交付。"
                          "只在批量 / CI / 已知不需要 audit 时关闭")
     ap.add_argument("--install-user-fonts", action="store_true",
