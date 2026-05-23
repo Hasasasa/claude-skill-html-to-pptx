@@ -2,15 +2,11 @@
 
 Use this file to pick the next debugging step after reading the self-check report and the compare image. Entries are not final answers; they record prior fixes and likely inspection points.
 
-## What Goes Here (And What Doesn't)
+## What Goes Here
 
-This file is the **shared knowledge base** for two categories — HTML anti-patterns (source HTML triggers known failures) and OOXML limits (PowerPoint / OOXML cannot natively express something). In both, the right fix is to **change the HTML**, not the skill code.
-
-Existing sections below (Adapter, Text Extraction, Shapes, Fonts, Layout, etc.) are the **skill's debug history**: they record where past skill changes landed so future debugging can find similar root causes faster. They are kept for diagnostic value, but **do not add new "skill bug → patched in measure.py" entries**. Per the SKILL.md "沉淀 HTML 问题与 OOXML 边界" policy:
-
-- New shared entries go into **HTML Anti-Patterns** or **OOXML Limits** at the bottom.
-- Apparent skill-internal bugs (the same CSS pattern breaks across decks) are **not patched ad-hoc** by an agent. The current deck gets an HTML workaround; the agent reports the pattern to the user so the maintainer can decide whether to raise the skill's abstraction level.
-- Project / customer-specific patterns belong in `lessons-learned-local.md` (gitignored).
+- Add new entries to **HTML Anti-Patterns** or **OOXML Limits** at the bottom.
+- Project- / customer-specific patterns go to `lessons-learned-local.md` (gitignored).
+- The earlier sections (Adapter, Text Extraction, Shapes, Fonts, Layout, etc.) are diagnostic history — read them when debugging, don't extend them.
 
 ## Quick Triage
 
@@ -114,15 +110,14 @@ The converter has dedicated handling for the following features. If they look br
 
 ## HTML Anti-Patterns
 
-Generic HTML patterns that author should avoid. **Add new entries here.**
+Generic HTML patterns the source should avoid.
 
 | Pattern | Why It Breaks PPT | HTML Rewrite |
 |---|---|---|
-| _(to be filled — any HTML idiom that consistently breaks conversion across decks)_ | | |
 
 ## OOXML Limits
 
-CSS / DOM patterns that OOXML or the PPT renderer cannot express precisely. **Add new entries here.** The HTML source must take an alternate channel.
+CSS / DOM patterns that OOXML or the PPT renderer cannot express precisely; the HTML source must take an alternate channel.
 
 | CSS / DOM Pattern | What OOXML Lacks | Alternate HTML Channel |
 |---|---|---|
