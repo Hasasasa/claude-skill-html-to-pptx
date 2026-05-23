@@ -250,10 +250,10 @@ def _normalize_to_slot(path: Path, family: str, slot: str) -> None:
 def _cached_font_matches(path: Path, family: str, weight: int) -> bool:
     """校验 cache 里的 TTF 是不是真符合 (family, weight)。
 
-    PowerPoint/WPS 用 name 表的 nameID=1 + OS/2.usWeightClass 来匹配嵌入字体；
-    早期 GF 解析逻辑曾把 Medium(500) 当 Regular(400) 落盘，文件名对但 name 表是
-    'Space Grotesk Medium'，PowerPoint 加载时匹配失败回退系统字体。
-    所以这里要校验，不匹配就返回 False，让上游重下覆盖。
+    PowerPoint/WPS 用 name 表的 nameID=1 + OS/2.usWeightClass 来匹配嵌入字体。
+    文件名对但 name/weight 不对时（如 Medium(500) 文件被命名为 Regular(400)），
+    PowerPoint 加载会匹配失败、回退系统字体——校验通过才算命中，不通过则
+    返回 False 让上游重下覆盖。
     """
     try:
         from fontTools.ttLib import TTFont

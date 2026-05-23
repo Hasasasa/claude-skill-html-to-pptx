@@ -234,7 +234,6 @@ def main():
     ap.add_argument("--no-verify", action="store_true",
                     help="跳过转换后的结构化自检（Stage 5a）。默认开启自检：扫 OOXML 结构找"
                          "全屏图嫌疑 / 文本框横向重叠 / 合并 preflight 风险。"
-                         "**不再做像素 diff 相似度比较**——像素 diff 对局部 bug 不敏感且给假信心，"
                          "视觉判断完全交 Stage 5b audit")
     ap.add_argument("--no-preflight", action="store_true",
                     help="跳过转换前的风险预扫（Stage 1）；预扫会标出已知踩坑模式并把"

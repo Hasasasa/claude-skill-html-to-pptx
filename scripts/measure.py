@@ -160,7 +160,7 @@ EXTRACT_JS = r"""
         outerHTML: el.outerHTML,
         color: css(el, 'color'),
       });
-      return; // SVG 内部不再下钻
+      return; // SVG 整体当一张图，不下钻子节点
     }
 
     if (el.tagName.toLowerCase() === 'img') {
@@ -229,8 +229,8 @@ EXTRACT_JS = r"""
           rotation: cumulativeRotation(el),
           marker,
         });
-        // overflow:hidden 裁切容器：容器 PNG 已经包含被裁后的子装饰，子不再单独处理
-        // （否则旋转子的 AABB 远大于裁切框，单独画会变成超大色块覆盖周围）
+        // overflow:hidden 裁切容器：容器 PNG 已经包含被裁后的子装饰，跳过子的单独处理
+        // （旋转子的 AABB 远大于裁切框，单独画会变成超大色块覆盖周围）
         // 例外：slide 根节点。slide 根的 overflow:hidden 是布局结构（裁视口），
         // 不是"装饰裁切意图"。若 slide 根本身命中此分支会吞掉所有 text/svg 子记录。
         if (el !== slide && isClippingContainerWithTransformedChildren(s, el)) {
@@ -616,10 +616,9 @@ def measure(html_path: Path, out_json: Path | None = None, *,
         page.evaluate("() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
 
         # canvas 内容（Chart.js / WebGL / 自绘图）的入场动画用 JS rAF 驱动，
-        # 不受 CSS animation kill 影响。这里用通用稳定性检测：
+        # 不受 CSS animation kill 影响。用通用稳定性检测，不依赖具体库名：
         # 1. 对所有 canvas 取像素 hash，等到连续两次 hash 一致即认为稳定
-        # 2. 最多等 2.0s（覆盖 Chart.js 默认 1000ms + 安全余量），不针对任何特定库
-        # 不再硬编码 window.Chart 等库名 — 任何用 rAF 渲染的库都受益
+        # 2. 最多等 2.0s（覆盖 Chart.js 默认 1000ms + 安全余量）
         has_canvas = page.evaluate("() => document.querySelectorAll('canvas').length > 0")
         if has_canvas:
             page.wait_for_function(r"""

@@ -32,7 +32,7 @@ from embed_fonts import (
 )
 from text_utils import is_cjk_text
 
-# 字体映射全部从 embed_fonts.FONT_PLAN 派生；不再在这里维护单独的表
+# 字体映射全部从 embed_fonts.FONT_PLAN 派生：
 # - FONT_FALLBACKS: CSS 名 → OOXML typeface
 # - CJK_FONTS:      标记为 CJK 的 typeface 集合
 # FONT_PLAN 是运行时填充的（font_resolver 按需解析），所以 convert.py 在 resolve
@@ -836,10 +836,10 @@ def add_deco_snapshot(slide, rec):
 
     重要：Playwright `locator.screenshot()` 对带 transform 的元素截的是 AABB
     （旋转/skew 后的可见矩形），旋转已经"烘焙"到位图里。直接放在 AABB rect
-    (rec.rect.x/y/w/h) 即可——**不再调 `_apply_rotation`**，否则会双重旋转
+    (rec.rect.x/y/w/h) 即可——**禁止调 `_apply_rotation`**：会双重旋转
     + naturalSize 压缩，对大尺寸旋转矩形（全宽 ribbon 等）尤其灾难。
 
-    子节点的文字 / 子装饰仍按原流程被绘制在它之上。
+    子节点的文字 / 子装饰按原流程绘制在它之上。
     """
     r = rec["rect"]
     if r["w"] <= 0 or r["h"] <= 0:
@@ -864,7 +864,7 @@ def assemble_slide(slide, data):
     text_records = []
     for rec in data["records"]:
         if rec["kind"] == "shape":
-            # 整页 section 不再单独 add（背景已铺）
+            # 整页 section 跳过（背景已由 add_background 铺）
             if rec["rect"]["w"] >= SLIDE_W_PX * 0.99 and rec["rect"]["h"] >= SLIDE_H_PX * 0.99:
                 continue
             add_shape_box(slide, rec)

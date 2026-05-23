@@ -341,7 +341,7 @@ def self_check(pptx_path: Path, html_screenshots_dir: Path,
                     "theme": slide.get("theme", ""),
                 })
 
-    # PPT 渲染：给 Stage 5b 视觉 audit 用。本函数本身不再比较像素
+    # PPT 渲染：给 Stage 5b 视觉 audit 用。本函数不做像素 diff，视觉判断交 5b VLM
     if ppt_screenshots_keep_dir is not None:
         ppt_screenshots_keep_dir.mkdir(parents=True, exist_ok=True)
         _cm = nullcontext(str(ppt_screenshots_keep_dir.parent))

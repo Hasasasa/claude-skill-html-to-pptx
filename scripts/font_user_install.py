@@ -1,16 +1,16 @@
 """font_user_install.py — 把解析到的字体装到用户字体目录。
 
-为什么需要：WPS Office（含 macOS 版）不读 pptx 里裸 TTF 嵌入字体（只认 ECMA-376
-obfuscated EOT），PowerPoint 接受裸 TTF 但 WPS 退回系统 fallback。
-解决：把字体装到用户级字体目录（无需管理员），WPS / Word / 浏览器一律识别。
+WPS Office（含 macOS 版）不读 pptx 里裸 TTF 嵌入字体（只认 ECMA-376
+obfuscated EOT），PowerPoint 接受裸 TTF 但 WPS 退回系统 fallback。把字体
+装到用户级字体目录（无需管理员），WPS / Word / 浏览器一律识别。
 
 跨平台路径：
 - Windows: `%LOCALAPPDATA%\\Microsoft\\Windows\\Fonts\\` + 写 HKCU 注册表
 - macOS:   `~/Library/Fonts/`（系统自动扫，无需注册）
 - Linux:   `~/.local/share/fonts/`（系统自动扫；改完跑 `fc-cache -f` 立即生效）
 
-调用前必须先经用户同意（skill 不应擅自改用户系统）。convert.py 用 --install-user-fonts
-flag 控制，SKILL.md 让上游 agent 在执行前 ask 用户。
+属于"改用户系统"行为：调用前必须用户授权。convert.py 用 --install-user-fonts
+flag 控制，SKILL.md 要求上游 agent 在执行前 ask 用户。
 """
 import os
 import shutil
