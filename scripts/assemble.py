@@ -106,6 +106,10 @@ GENERIC_FONT_KEYWORDS = {
     "-apple-system", "blinkmacsystemfont", "-webkit-system-font",
 }
 
+# 最后兜底字体（CSS 没声明、或全是 generic 关键字时用）。Calibri 是 PowerPoint 自 2007
+# 起的默认西文字体，Windows + Office 跨平台都自带；其它 viewer 上若缺则各自系统再 fallback。
+DEFAULT_LATIN_FALLBACK = "Calibri"
+
 
 def first_font(font_family: str) -> str:
     """从 CSS font-family 字符串里挑第一项（latin 用），去引号。
@@ -120,7 +124,7 @@ def first_font(font_family: str) -> str:
         if it.lower() in FONT_FALLBACKS:
             return FONT_FALLBACKS[it.lower()]
         return it  # 用户用了我们没装的字体，原名透传（运行时回退到系统）
-    return items[0] if items else "Calibri"
+    return items[0] if items else DEFAULT_LATIN_FALLBACK
 
 
 def cjk_font(font_family: str, latin_name: str) -> str:
@@ -692,7 +696,7 @@ def _emit_run(paragraph, text, run, text_transform):
         text = text.lower()
 
     # 解析参数
-    font_name = first_font(run.get("fontFamily", "Calibri"))
+    font_name = first_font(run.get("fontFamily", DEFAULT_LATIN_FALLBACK))
     font_size_px = run.get("fontSize", 16)
     font_size_pt = round(font_size_px * PX_TO_PT, 2)
 

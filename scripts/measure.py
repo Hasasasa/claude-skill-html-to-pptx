@@ -7,7 +7,8 @@ Usage:
 
 约定：
 - 视口固定 1920x1080
-- slide_index 从 0 开始（对应 document.querySelectorAll('section.slide')[i]）
+- slide 元素由 adapters.DISCOVER_JS 启发式发现（用户显式 `[data-pptx-slide]` 优先，
+  否则按"同 tag 兄弟 + 至少一个 ≥50% viewport"启发），slide_index 从 0 开始对应该数组
 """
 import json
 import sys
@@ -683,16 +684,25 @@ def measure(html_path: Path, out_json: Path | None = None, *,
             # 等一帧让 .active 类等切换后的 computed style / transform 生效
             page.evaluate("() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
 
-            # counter 动画（[data-target] 元素从 0 渐变到 dataset.target）通用模式：
-            # 等到所有 counter 的 textContent 包含其 dataset.target 数值字串再抓。
+            # counter 动画稳定性等待：识别 3 种常见 counter 约定（不是全部，足以覆盖绝大多数手写 JS counter）：
+            #   `data-target` / `data-count-to` / `data-counter`
+            # 等到 textContent 包含 dataset 里对应的目标值再抓；超时强制 set 终值。
             # 不等的话会拿到动画中段帧（如 "1+ 0+ 0+ 3" 而非终值 "42+ 20+ 7+ 100"）。
-            # 没有 counter 的 slide 立刻 return true，不影响速度。
-            has_counter = page.evaluate("() => document.querySelectorAll('[data-target]').length > 0")
+            # 注：用了其它 attr 名的 deck（罕见）会被跳过；agent 可在 audit 阶段发现数字错位
+            # 并把对应 HTML 改成上述任一约定，下次 convert 即修复。这是 script 兜底 + agent 兜底的分工。
+            page.evaluate(r"""() => {
+                // 把多约定 counter 统一暴露给后续 wait / fallback
+                const SELECTOR = '[data-target], [data-count-to], [data-counter]';
+                window.__pptxCounters = Array.from(document.querySelectorAll(SELECTOR));
+                window.__pptxCounterTarget = (el) =>
+                    el.dataset.target || el.dataset.countTo || el.dataset.counter || '';
+            }""")
+            has_counter = page.evaluate("() => (window.__pptxCounters || []).length > 0")
             if has_counter:
                 try:
                     page.wait_for_function(
-                        """() => Array.from(document.querySelectorAll('[data-target]')).every(c => {
-                            const t = c.dataset.target;
+                        """() => (window.__pptxCounters || []).every(c => {
+                            const t = window.__pptxCounterTarget(c);
                             return t && c.textContent.includes(t);
                         })""",
                         timeout=2500,
@@ -700,8 +710,9 @@ def measure(html_path: Path, out_json: Path | None = None, *,
                 except Exception:
                     # IntersectionObserver 没触发或别的原因没跑完——强制设终值兜底
                     page.evaluate("""() => {
-                        for (const c of document.querySelectorAll('[data-target]')) {
-                            if (c.dataset.target) c.textContent = c.dataset.target;
+                        for (const c of (window.__pptxCounters || [])) {
+                            const t = window.__pptxCounterTarget(c);
+                            if (t) c.textContent = t;
                         }
                     }""")
             data = page.evaluate(EXTRACT_JS, i)
