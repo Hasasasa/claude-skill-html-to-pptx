@@ -318,15 +318,12 @@ def main():
                          "**调用 skill 的 agent 必须**逐页对比识别问题、迭代修复，直到交付。"
                          "只在批量 / CI / 已知不需要 audit 时关闭")
     ap.add_argument("--only-slides", default=None,
-                    help="增量重跑模式。逗号分隔的页号（1-based），如 '2,7,12'。"
-                         "measure 只跑指定页（Playwright loop 跳过其它页，省 80%%+）+ 与上轮 cached "
-                         "measurement 合并；assemble/embed 仍全量（保 pptx 完整 + 字体子集覆盖全 deck）；"
-                         "Stage 5a 只渲指定页到 PNG；Stage 5b 只重建指定页的 compare 图——其它页全部复用上轮缓存。"
-                         "典型用法：audit 修完几个页后，重跑时带这个 flag，省 70%%+ 时间。"
-                         "**前提**：上轮的 <out>_audit/_cache/measurements.json 还在（被 cleanup 删过 / 第一次跑 → "
-                         "自动回退全量 measure 兜底，不报错）。"
-                         "**不要用**：改了全局 CSS / 新增/删除字体 / 改了 deck-level 样式时——这些会影响所有页，"
-                         "必须不带本 flag 全量重跑")
+                    help="增量重跑。逗号分隔的页号（1-based），如 '2,7,12'。"
+                         "measure 只跑指定页，与上轮 cached measurement 合并；assemble/embed 仍全量；"
+                         "Stage 5a/5b 只对指定页重渲 + 重建 compare 图。"
+                         "用在 audit 迭代轮。"
+                         "前提：上轮 <out>_audit/_cache/measurements.json 还在；缺失自动回退全量。"
+                         "不要用：改了全局 CSS / 字体 / deck-level 样式时——全量重跑")
     ap.add_argument("--install-user-fonts", action="store_true",
                     help="把解析到的非 CJK 字体安装到用户字体目录。"
                          "Windows → %%LOCALAPPDATA%%\\Microsoft\\Windows\\Fonts\\ + HKCU 注册；"
