@@ -38,24 +38,43 @@ python <skill_dir>/convert.py <input.html>
 | `--only-slides N,N,N` | **增量重跑**。逗号分隔的页号（1-based）。measure 只跑指定页 + 与上轮 cached measurement 合并；assemble/embed 仍全量；Stage 5a 只渲指定页；Stage 5b 只重建指定页的 compare 图——其它页全部复用上轮缓存。audit 迭代轮专用，详见下方"增量重跑"章节 |
 | `--cleanup` | 不做转换。删 input.pptx 旁的 audit / measurement / preflight 工作物，只保留 .pptx 本身。**最终交付前用**，见下方"工作流"末步 |
 
-## 字体安装确认（重要）
+## 字体安装确认（**必读，在第一次 convert 之前完成**）
 
-WPS Office 不读 pptx 里嵌入的裸 TTF 字体（只认 ECMA-376 obfuscated EOT），WPS 打开会退回系统字体。
-解决方法：把字体装到当前平台的用户字体目录（用户级，无需管理员），WPS / Word / Pages / LibreOffice 一律当系统字体用：
+### 为什么必须装
+
+两个真实约束（不装字体直接跑必然撞）：
+
+1. **PowerPoint COM `slide.Export()`（Stage 5b audit 在用）不读 pptx 内嵌字体**——只用系统已装字体。不装字体时 audit compare 图里所有非系统字体都回退到 Times / Arial / Courier，看起来像"字体回退 + 大面积文字叠压"（叠压实质是回退字体更宽，换行更多，挤进下方段落）。这些 finding 全是 false positive，处理完一轮才发现根因是字体——浪费 10+ min
+2. **WPS Office** 同样不读 pptx 内嵌的裸 TTF（只认 ECMA-376 obfuscated EOT）
+
+装到用户字体目录后，**PowerPoint / WPS / Word / Pages / LibreOffice 全把它当系统字体用**，audit 渲染等于交付效果：
 
 - Windows: `%LOCALAPPDATA%\Microsoft\Windows\Fonts\` + HKCU 注册
 - macOS: `~/Library/Fonts/`
 - Linux: `~/.local/share/fonts/` + `fc-cache -f`
 
-**这是改用户系统的行为，必须先征得用户同意。** 调用 convert.py 之前：
+用户级目录，**无需管理员，可手工删**。
 
-1. 用 AskUserQuestion 问用户："HTML 用到非内置字体（如 Inter / Space Grotesk），是否同意把它们装到用户字体目录？WPS 需要这一步才能正确渲染嵌入字体。装到用户级目录无需管理员，可随时删除（直接删文件即可）。"
-2. 用户同意 → 调 convert 加 `--install-user-fonts`
-3. 用户拒绝 → 不加 flag。告知用户："pptx 已嵌入字体，PowerPoint 桌面版能正常打开；WPS 会用系统 fallback 字体，视觉可能与 HTML 不一致"
+### 何时 ask（**第一次 convert 之前**）
 
-例外情况——不需要问：
-- HTML 只用了用户系统已有的字体（如 Microsoft YaHei / SimSun / SF Pro 等系统自带字体）
-- 用户在 CLAUDE.md / 全局指令里已说"以后字体自动装无需再问"
+打开 HTML 看 `<head>` 的 `<link href="...fonts.googleapis.com/...">` / `@import url(https://fonts.googleapis.com/...)` / `<style>` 里 `font-family:` 出现的字体名：
+
+- **触发**：用到任何 GF / 自托管的非系统字体（Bricolage Grotesque, DM Sans, Inter, Space Grotesk, Caveat 等）
+- **不触发**：只用系统字体白名单（Arial, Times New Roman, Helvetica, Helvetica Neue, Courier, system-ui, -apple-system, BlinkMacSystemFont, SF Pro, Microsoft YaHei, SimSun, PingFang, Hiragino 等）
+
+触发就 ask：
+
+> "HTML 用到非系统字体（[列举检测到的字体名]），需要装到用户字体目录否则 audit 渲染会回退到 Times / Arial，视觉与 HTML 不一致、findings 会被 false positive 淹没。装到 user-level 无需管理员，可随时手工删（路径：上面列表）。是否同意安装？"
+
+### 记住答案，整个会话不再问
+
+- 用户同意 → 之后**每次** convert 都加 `--install-user-fonts`
+- 用户拒绝 → 之后**每次** convert **都不**加。告知：audit 看到的字体回退是渲染管线限制，pptx 内嵌字体仍然正确，最终用户用桌面 PowerPoint 打开 + 系统已装相应字体时会渲染对
+
+### 例外（不需要问，直接当"同意"）
+
+- HTML 只用系统字体白名单 → 不装，不问
+- CLAUDE.md / 全局指令已说"以后字体自动装无需再问" → 每次加 flag，不问
 
 ## 工作流（强制）
 
@@ -91,19 +110,23 @@ Stage 5b 视觉 audit 需要把 .pptx 渲染成 PNG，依赖：
 
 用户选 1 → 等他装完重跑；选 2 → 加 `--no-visual-audit` 跑一遍，把告知风险后交付；选 3 → 把当前目录 + HTML 发给他。
 
-### 并行 audit（前提：5b 跑起来了）
+### 并行 audit（强制，前提：5b 跑起来了）
 
-按 batch 分发 sub-agent 看 compare 图。完整 sub-agent 调用模板 + 检查清单 + findings 格式见 `<out>_audit/audit_prompt.md`。
+**所有页数都走 sub-agent 并行 dispatch，主 agent 不要自己 Read compare 图**。原因：单张 compare 图过 vision 推理 ~10s，9 张就 90s+ 推理时间；外加边看边分析，单轮 audit 会多花 5-10 min。Sub-agent 并行一批 4 页 ~30s 出 findings，省一个数量级。
 
-按页数选策略：
+按页数分 batch：
 
 | slide 数 | 策略 |
 |---|---|
-| ≤ 4 | 主 agent 直接看，不分发 sub-agent |
-| 5-20 | 每 batch 4 页并行 dispatch |
+| ≤ 4 | 1 个 batch（仍走 sub-agent，不要主 agent 直接看） |
+| 5-20 | 每 batch 4 页并行 dispatch（向上取整，例：9 页 = 2 batch 4+5） |
 | > 20 | 每 batch 4-5 页 |
 
+完整 sub-agent 调用模板 + 检查清单 + findings 格式见 `<out>_audit/audit_prompt.md`。多个 batch 用**一条 message 同时发出**才并行（多 Agent 调用塞在一个 message 内）。
+
 sub-agent 只返回 findings 文本（含每页的 `## page NN` 块），主 agent 统一合并写 `audit_findings.md`。多个并发写文件会互相覆盖。
+
+**反模式**：主 agent 觉得 "就 3 页，我自己看一下快" → 实际比并行 sub-agent 慢 3-5×。**不要这么做**。
 
 ### 修复纪律（针对 finding，不追根因）
 

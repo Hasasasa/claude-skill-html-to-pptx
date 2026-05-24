@@ -95,6 +95,7 @@ Use this file to pick the next debugging step after reading the self-check repor
 | Stage 5a / 5b skipped — no pptx renderer available | PowerPoint COM and LibreOffice are both unavailable | Install Office (Windows) or `apt install libreoffice` + `pip install pdf2image`. Without a renderer, Stage 5b audit cannot run either. See SKILL.md renderer-requirement section for the user-consent flow. |
 | Stage 5a FULL-PIC warning | A `<p:pic>` covers ≥ ~98 % of the slide — likely a `deco_snapshot` double-layer bug | Inspect with `dump_records.py`; if confirmed, this is a skill-abstraction gap — apply an HTML workaround for the current deck and report the pattern to the maintainer. |
 | Stage 5a LAYOUT warning | Two PPT text boxes overlap horizontally while HTML measurements show them apart | Inspect the slide's records via `dump_records.py`; usually a flex / grid gap got collapsed or font metrics differ enough to trigger. |
+| Stage 5b audit compare 图大面积字体回退（serif / mono 出现在本该是 Bricolage / Inter / Space Grotesk 的位置），同时多页报 [HIGH] "标题与正文叠压" | **PowerPoint COM `slide.Export()` 不读 pptx 内嵌的 TTF 字体**——只用系统已装字体。回退字体（Times / Courier）比设计字体宽，标题强制多换行 → 挤进下方段落 → 假叠压。pptx 内嵌字体本身正确（slide.xml `typeface=` 对、`/ppt/fonts/fontN.fntdata` 都有、nameID 也对得上），不是 skill bug | **不要**先去诊断 OOXML / nameID / lessons-learned 的 GF Medium-as-Regular 条目——那些都不是这次的根因。直接告诉用户 "audit 渲染管线本身不读内嵌字体，需要把字体装到用户字体目录"，征得同意后用 `--install-user-fonts` 重跑。装完后 PowerPoint COM 通过系统字体路径找到这些字体，audit 渲染等于交付效果。SKILL.md "字体安装确认" 段要求**第一次 convert 之前**就 ask，从源头避免这一轮浪费 |
 
 ## What The Skill Already Covers
 

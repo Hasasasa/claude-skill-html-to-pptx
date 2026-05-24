@@ -16,15 +16,15 @@ AUDIT_PROMPT_MD = """# Visual Audit
 ## 流程
 
 1. 读 `audit_index.json` 拿到页清单。若 `incremental_mode=true`，**只看 `fresh_indices` 列出的页**——其它页是上轮缓存的 compare 图，本轮无需复审
-2. **按 batch 并行 dispatch sub-agent 看图**（详见下"并行执行"）—— 每个 Agent 处理 3-4 页一批。增量模式下只对 fresh_indices 分发
+2. **按 batch 并行 dispatch sub-agent 看图（强制，不论页数）**——主 agent **不要**自己 Read compare 图。单张 compare 图过 vision 推理 ~10s，主 agent 串行看完一轮要 2-10 min；sub-agent 并行 ~30s 出 findings。即使只剩 1-2 fresh 页，仍 dispatch 1 个 sub-agent（详见下"并行执行"）
 3. 主 agent 收回各 sub-agent 的 findings 文本（每个含若干 `## page NN` 块），按页号拼成 `audit_findings.md`（首轮）或 `audit_findings_round_N.md`（迭代轮）
 4. **每个 finding 内部做最小局部 HTML 修改**（只改让它消失的那一处，不扩散）：**不**追溯根因、**不**做 finding 列表外的"顺手优化"、**不**跨 finding 做结构性重构。同一 finding 试改 ≥ 2 次仍不 OK，停下来告诉用户。判定标准：diff 行数 ≤ findings 数 × 3 行
 5. **本轮所有 finding 都改完再重跑** `convert.py` —— 不要改一个跑一次。一轮 = 一批 HTML 编辑 + 一次 convert + 一次 audit。重跑命令带上 `--only-slides N1,N2,...`（本轮被改过的页号），Stage 5a 只重渲这些页、Stage 5b 只重建这些页的 compare，其它页直接复用缓存——可省 60-80% 时间。例外：本轮改的是**全局 CSS / 字体 / deck-level 样式**（影响所有页），不带 --only-slides 全量重跑。重跑后回到第 1 步
 6. 所有页 OK 或仅剩 LOW 才交付
 
-## 并行执行（强制）
+## 并行执行（强制，不论页数）
 
-按 batch 分发，每 batch 3-4 页一个 sub-agent。
+按 batch 分发，每 batch 3-4 页一个 sub-agent。**即使只有 1-3 页也走 sub-agent**——主 agent 自己 Read compare 图是反模式（vision 推理 ~10s/张 + 边看边分析，3 页就要 1-3 min；sub-agent 异步 ~30s 出 findings）。
 
 **何时拆 batch**：见 SKILL.md "并行 audit" 小节的页数策略表。
 
