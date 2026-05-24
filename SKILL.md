@@ -128,6 +128,31 @@ sub-agent 只返回 findings 文本（含每页的 `## page NN` 块），主 age
 
 **反模式**：主 agent 觉得 "就 3 页，我自己看一下快" → 实际比并行 sub-agent 慢 3-5×。**不要这么做**。
 
+### 等 sub-agent 时主 agent 必须并行做的事（强制）
+
+sub-agent 看一批图典型 30-90s，主 agent **不要干等**——在**同一条 message 里**和 Agent 调用一起发以下并行工具调用，让等待时间被并行 Read 覆盖掉：
+
+```
+<function_calls>
+  Agent(run_in_background: true, description: "Audit slides 1-4", prompt: ...)
+  Agent(run_in_background: true, description: "Audit slides 5-9", prompt: ...)
+  Read(file_path: "<deck>/template.html")              ← 修 finding 时必读，先加载
+  Read(file_path: "<skill_dir>/references/lessons-learned.md")  ← 排查 OOXML 边界要用
+  Grep(pattern: "class=\"slide |data-slide=", path: "<deck>/template.html", output_mode: "content", -n: true)
+                                                       ← 每页 section 起始行号，等下定位修复点用
+</function_calls>
+```
+
+**关键点**：
+- `run_in_background: true` 让 Agent 不阻塞主 agent；主 agent 可继续在同一 message 里发别的工具调用
+- 多个 tool 调用塞**一条 message** 才并行；分开发就是串行
+- 这些 Read / Grep 即使 findings 还没回来也有用——HTML 必读、lessons-learned 查 boundary 必读，提前加载即可
+- 不要预测 findings 然后预改 HTML——盲改是浪费，**只做"无论 findings 是什么都会用上"的准备**
+
+收到 sub-agent findings 后立刻进入"合并 findings → 改 HTML"，HTML 文件早已在 context 里，省一次 Read 等待。
+
+**反模式**：主 agent 在 dispatch 后单独发一条 message 说 "等 sub-agent 返回中..."——这就是干等。**永远在 dispatch 那条 message 里塞并行准备工作**。
+
 ### 修复纪律（针对 finding，不追根因）
 
 收到 `audit_findings.md` 之后，**一轮里把本轮所有 finding 都改完，再一次性重跑 convert + audit**——不是改一个跑一次。一轮 = 一批 HTML 编辑 + 一次 convert + 一次 audit。
