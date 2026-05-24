@@ -38,7 +38,8 @@ def convert(html_path: Path, out_path: Path, keep_screenshots: bool, embed_fonts
             do_verify: bool = True,
             do_preflight: bool = True,
             do_visual_audit: bool = True,
-            install_user_fonts: bool = False):
+            install_user_fonts: bool = False,
+            only_indices: set[int] | None = None):
     html_path = html_path.resolve()
     out_path = out_path.resolve()
     if not html_path.exists():
@@ -156,6 +157,7 @@ def convert(html_path: Path, out_path: Path, keep_screenshots: bool, embed_fonts
                     measurements_path=anchor_json,
                     preflight_result=preflight_result,
                     ppt_screenshots_keep_dir=ppt_keep_dir,
+                    only_indices=only_indices,
                     verbose=True)
             except Exception as e:
                 print(f"[self-check] 异常（忽略，不影响产出）: {e}")
@@ -175,14 +177,36 @@ def convert(html_path: Path, out_path: Path, keep_screenshots: bool, embed_fonts
                     self_check_result=self_check_result,
                     preflight_result=preflight_result,
                     out_dir=audit_dir,
+                    only_indices=only_indices,
                 )
                 print(f"[audit]    {pkg['pages']} 页对比物料 → {pkg['out_dir']}")
+                if pkg.get("incremental"):
+                    print(f"[audit]    增量：本轮重建 {pkg['fresh']}，复用上轮 {pkg['cached']}")
                 print(f"[audit]    给上游 agent 看: 读 {pkg['prompt']} 然后逐页看 slide_NN_compare.png")
             except Exception as e:
                 print(f"[audit] 异常（忽略）: {e}")
             print(f"[audit]    耗时 {time.perf_counter()-t0:.2f}s")
 
     print(f"\n[done] {out_path} ({out_path.stat().st_size:,} B)")
+
+
+def _parse_only_slides(spec: str | None) -> set[int] | None:
+    """'2,7,12' → {2,7,12}. None/空串 → None（全量）。所有 token 必须正整数。"""
+    if spec is None or not spec.strip():
+        return None
+    out: set[int] = set()
+    for tok in spec.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            n = int(tok)
+        except ValueError:
+            raise SystemExit(f"--only-slides: 无法解析 '{tok}'，期望逗号分隔的页号（1-based）")
+        if n < 1:
+            raise SystemExit(f"--only-slides: 页号必须 ≥ 1，得到 {n}")
+        out.add(n)
+    return out or None
 
 
 def cleanup_artifacts(pptx_path: Path) -> list[Path]:
@@ -244,6 +268,14 @@ def main():
                          "渲染器在位时产出每页 HTML|PPT 双栏对比图 + audit_index.json + audit_prompt.md，"
                          "**调用 skill 的 agent 必须**逐页对比识别问题、迭代修复，直到交付。"
                          "只在批量 / CI / 已知不需要 audit 时关闭")
+    ap.add_argument("--only-slides", default=None,
+                    help="增量重跑模式。逗号分隔的页号（1-based），如 '2,7,12'。"
+                         "measure/assemble/embed 仍全量跑（保 pptx 完整），但 Stage 5a 只渲染指定页到 PNG，"
+                         "Stage 5b 只重建指定页的 compare 图——其它页复用上轮缓存（_audit/_ppt_renders/ + slide_NN_compare.png）。"
+                         "典型用法：audit 修完几个页后，重跑时带这个 flag，省 60-80%% 时间。"
+                         "**前提**：上轮的 <out>_audit/ 目录还在（否则缓存未命中的页会自动全量渲染兜底）。"
+                         "**不要用**：改了全局 CSS / 新增/删除字体 / 改了 deck-level 样式时——这些会改变所有页的视觉，"
+                         "必须不带本 flag 全量重跑")
     ap.add_argument("--install-user-fonts", action="store_true",
                     help="把解析到的非 CJK 字体安装到用户字体目录。"
                          "Windows → %%LOCALAPPDATA%%\\Microsoft\\Windows\\Fonts\\ + HKCU 注册；"
@@ -269,13 +301,22 @@ def main():
 
     in_path = Path(args.input)
     out_path = Path(args.out) if args.out else in_path.with_suffix(".pptx")
+    only_indices = _parse_only_slides(args.only_slides)
+    if only_indices is not None:
+        if args.no_verify:
+            print("[only-slides] 警告：与 --no-verify 同用——Stage 5a 不跑，--only-slides 无效果")
+        elif args.no_visual_audit:
+            print("[only-slides] 警告：与 --no-visual-audit 同用——Stage 5b 不跑，"
+                  "只在 Stage 5a 渲染层省时")
+        print(f"[only-slides] 增量模式：只重渲 + 重建 compare 图的页 = {sorted(only_indices)}")
     convert(in_path, out_path,
             keep_screenshots=args.keep_screenshots,
             embed_fonts=not args.no_embed_fonts,
             do_verify=not args.no_verify,
             do_preflight=not args.no_preflight,
             do_visual_audit=not args.no_visual_audit,
-            install_user_fonts=args.install_user_fonts)
+            install_user_fonts=args.install_user_fonts,
+            only_indices=only_indices)
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@ python <skill_dir>/convert.py <input.html>
 | `--no-verify` | 关闭 Stage 5a 结构化自检 |
 | `--no-visual-audit` | 关闭 Stage 5b 视觉 audit 物料产出。日常不要关 |
 | `--install-user-fonts` | 把自动解析到的非 CJK 字体装到用户字体目录（让 WPS 能正确渲染）。Win/macOS/Linux 都支持。**必须先问用户**，见下方"字体安装确认"章节 |
+| `--only-slides N,N,N` | **增量重跑**。逗号分隔的页号（1-based）。measure/assemble/embed 仍全量跑（保 pptx 完整），但 Stage 5a 只重渲指定页、Stage 5b 只重建指定页的 compare 图，其它页复用上轮缓存。audit 迭代轮专用，详见下方"增量重跑"章节 |
 | `--cleanup` | 不做转换。删 input.pptx 旁的 audit / measurement / preflight 工作物，只保留 .pptx 本身。**最终交付前用**，见下方"工作流"末步 |
 
 ## 字体安装确认（重要）
@@ -66,7 +67,7 @@ convert.py
   → Stage 5b 视觉 audit 物料 — 需要 PowerPoint COM 或 LibreOffice 渲染器
   → 【并行 audit】按 batch（4 页/batch）并行 sub-agent 看 compare 图返回 findings，主 agent 合并写 audit_findings.md
   → 按 finding 逐项做最小局部 HTML 修改（见下"修复纪律"）
-  → 重跑 convert + 重做 audit（findings_round_2.md ...）
+  → 一批 finding 改完后 `convert.py <html> --only-slides <被改页号>` + 只对 fresh 页重审（见下"增量重跑"）
   → 所有页 OK 或仅剩 LOW
   → 【若撞到 HTML 反模式 / 新 OOXML 边界】沉淀到 lessons-learned，见下方"沉淀 HTML 问题与 OOXML 边界"
   → python convert.py <out>.pptx --cleanup  ← 删 audit/measurement/preflight 工作物
@@ -106,15 +107,45 @@ sub-agent 只返回 findings 文本（含每页的 `## page NN` 块），主 age
 
 ### 修复纪律（针对 finding，不追根因）
 
-收到 `audit_findings.md` 之后，**逐项**做最小局部 HTML 修改：
+收到 `audit_findings.md` 之后，**一轮里把本轮所有 finding 都改完，再一次性重跑 convert + audit**——不是改一个跑一次。一轮 = 一批 HTML 编辑 + 一次 convert + 一次 audit。
 
-- 每个 finding 只改"让它消失"的那一处，改完立刻进下一个 finding
+每个 finding 内部做最小局部 HTML 修改：
+
+- 每个 finding 只改"让它消失"的那一处，改完进下一个 finding（**继续改 HTML**，不是重跑 convert）
 - **不**追溯"为什么字体回退 / 为什么布局偏移"的深层根因
 - **不**做"我顺手把 .footer 也改成绝对定位"这种 finding 列表外的优化
 - **不**跨 finding 做结构性重构（"统一把所有 slide 的 font-family 显式声明"≠ 单个 finding 的最小修复）
 - 同一 finding 反复试改 ≥ 2 次仍不 OK，停下来告诉用户，**不要**继续扩大改动面
 
+本批 finding 改完一次性 `python convert.py <html> --only-slides <被改过的页号>` —— Stage 5a/5b 只重跑这些页，省 60-80% 时间。
+
 判定标准：你的 diff 行数 ≤ findings 数 × 3 行。超过这个量级说明在"乱发挥"。
+
+### 增量重跑（`--only-slides`，audit 第 2 轮起用）
+
+**只在 audit 迭代轮里用，首轮（HTML → 第一次 convert）不用**。
+
+```bash
+python convert.py <html> --only-slides 2,7,12
+```
+
+省时机制：
+- measure / assemble / embed_fonts 仍全量跑（保 pptx 完整、字体子集正确）—— 全量这块 ~1-2 min，跑不掉
+- Stage 5a 渲染 PPT → PNG：只对列出的页 + 缓存缺失的页 export；其它页保留 `<out>_audit/_ppt_renders/slide_NN.png`
+- Stage 5b 重建 compare 图：只对列出的页 rebuild；其它页保留 `<out>_audit/slide_NN_compare.png`
+- `audit_index.json` 标 `incremental_mode: true`、`fresh_indices: [2,7,12]`、`cached_indices: [...]`、每页 `fresh: true/false`
+
+并行 audit 时**只对 `fresh_indices` 分 batch 分发 sub-agent**——cached 页本轮无视觉变化，不必复审。
+
+**前提条件**：上轮的 `<out>_audit/` 目录还在（含 `_ppt_renders/` + compare 图）。被 `--cleanup` 删过 / 第一次跑 / 缓存丢失的页，本轮自动全量渲染兜底，不会出错。
+
+**不要在以下情况用 `--only-slides`**（视觉影响溢出列出的页，缓存会假阴性）：
+- 改了**全局 CSS**（`<style>` 块、根选择器、`.slide` 通用样式等）
+- **新增 / 删除字体**（CSS @import、font-family 声明变更）
+- 改了 **deck-level 样式**（背景、主题色、间距 token 等）
+- 改了**任何会影响其它页布局**的全局变量
+
+这几类直接不带 flag 全量重跑。判断不准 → 全量重跑总是安全的。
 
 **交付前必须 cleanup**：audit 物料是 agent 工作用的中间产物，用户只要 .pptx。最终一行命令 `python convert.py <out>.pptx --cleanup` 会把同目录下 `<out>_audit/`、`<out>_measurements*`、`<out>_preflight.json` 全部删干净，目录里只剩 `<out>.pptx`。
 

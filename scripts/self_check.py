@@ -34,8 +34,12 @@ NS = {
 }
 
 
-def _try_powerpoint_com(pptx_path: Path, out_dir: Path):
-    """返回 (count, error)。"""
+def _try_powerpoint_com(pptx_path: Path, out_dir: Path, only_indices: set[int] | None = None):
+    """返回 (count, error)。count = pres 总页数（含缓存命中页），不只是本次新渲染数。
+
+    only_indices 给定时走增量：只对 (i ∈ only_indices) 或 (cache miss) 的页 Export。
+    其它页保留 out_dir 里上轮的 slide_NN.png。
+    """
     try:
         import pythoncom  # noqa: F401
         import win32com.client
@@ -49,11 +53,16 @@ def _try_powerpoint_com(pptx_path: Path, out_dir: Path):
             # 参数顺序: FileName, ReadOnly, Untitled, WithWindow
             pres = app.Presentations.Open(str(pptx_path.resolve()), True, False, True)
             try:
-                count = 0
+                total = 0
                 for i, slide in enumerate(pres.Slides, start=1):
-                    slide.Export(str(out_dir / f"slide_{i:02d}.png"), "PNG", 1920, 1080)
-                    count += 1
-                return count, None
+                    total += 1
+                    out_png = out_dir / f"slide_{i:02d}.png"
+                    must_render = (only_indices is None
+                                   or i in only_indices
+                                   or not out_png.exists())
+                    if must_render:
+                        slide.Export(str(out_png), "PNG", 1920, 1080)
+                return total, None
             finally:
                 pres.Close()
         finally:
@@ -62,13 +71,18 @@ def _try_powerpoint_com(pptx_path: Path, out_dir: Path):
         return 0, f"PowerPoint COM 调用失败: {e}"
 
 
-def _try_libreoffice(pptx_path: Path, out_dir: Path):
-    """LibreOffice headless 把 pptx 转 PDF，再用 pdf2image 拆页。"""
+def _try_libreoffice(pptx_path: Path, out_dir: Path, only_indices: set[int] | None = None):
+    """LibreOffice headless 把 pptx 转 PDF，再用 pdf2image 拆页。
+
+    only_indices 给定时走增量：仍要做 pptx→PDF（无法绕过），但 PDF→PNG 只对
+    (i ∈ only_indices) 或 (cache miss) 的页做（pdf2image 支持 first_page/last_page 选页）。
+    其它页保留 out_dir 里上轮的 slide_NN.png。
+    """
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
     if not soffice:
         return 0, "未找到 LibreOffice (soffice / libreoffice)"
     try:
-        from pdf2image import convert_from_path
+        from pdf2image import convert_from_path, pdfinfo_from_path
     except ImportError:
         return 0, "pdf2image 未安装"
     try:
@@ -83,29 +97,46 @@ def _try_libreoffice(pptx_path: Path, out_dir: Path):
             pdf = next(Path(td).glob("*.pdf"), None)
             if not pdf:
                 return 0, "LibreOffice 未产出 PDF"
-            pages = convert_from_path(str(pdf), size=(1920, 1080))
-            for i, p in enumerate(pages, start=1):
-                p.save(out_dir / f"slide_{i:02d}.png")
-            return len(pages), None
+            if only_indices is None:
+                pages = convert_from_path(str(pdf), size=(1920, 1080))
+                for i, p in enumerate(pages, start=1):
+                    p.save(out_dir / f"slide_{i:02d}.png")
+                return len(pages), None
+            # 增量：先用 pdfinfo 拿总页数，然后只渲列出的 + cache miss 的
+            info = pdfinfo_from_path(str(pdf))
+            total = int(info.get("Pages", 0))
+            for i in range(1, total + 1):
+                out_png = out_dir / f"slide_{i:02d}.png"
+                must_render = i in only_indices or not out_png.exists()
+                if not must_render:
+                    continue
+                rendered = convert_from_path(str(pdf), size=(1920, 1080),
+                                             first_page=i, last_page=i)
+                if rendered:
+                    rendered[0].save(out_png)
+            return total, None
     except Exception as e:
         return 0, f"LibreOffice 渲染异常: {e}"
 
 
-def render_pptx_to_pngs(pptx_path: Path, out_dir: Path):
+def render_pptx_to_pngs(pptx_path: Path, out_dir: Path, only_indices: set[int] | None = None):
     """按优先级尝试渲染器。返回 (engine_label, count, errors_dict)。
 
     PowerPoint COM > LibreOffice。都不可用就跳过 PPT 截图——
     没有 PIL fallback，因为 PIL 估算渲染会误导 Stage 5b 的 VLM。
+
+    only_indices 给定时走增量：未列出且 cache 命中的页跳过 export。
+    返回 count = pres 总页数（含缓存页），engine 判定不变。
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     errors = {}
 
-    count, err = _try_powerpoint_com(pptx_path, out_dir)
+    count, err = _try_powerpoint_com(pptx_path, out_dir, only_indices=only_indices)
     if count > 0:
         return ("PowerPoint", count, errors)
     errors["powerpoint"] = err
 
-    count, err = _try_libreoffice(pptx_path, out_dir)
+    count, err = _try_libreoffice(pptx_path, out_dir, only_indices=only_indices)
     if count > 0:
         return ("LibreOffice", count, errors)
     errors["libreoffice"] = err
@@ -295,6 +326,7 @@ def self_check(pptx_path: Path, html_screenshots_dir: Path,
                measurements_path: Path | None = None,
                preflight_result: dict | None = None,
                ppt_screenshots_keep_dir: Path | None = None,
+               only_indices: set[int] | None = None,
                verbose: bool = True) -> dict:
     """Stage 5a 结构化自检：渲染 pptx → PNG，扫 OOXML 结构告警，不做像素 diff。
 
@@ -352,8 +384,10 @@ def self_check(pptx_path: Path, html_screenshots_dir: Path,
 
     with _cm as td:
         ppt_dir = ppt_dir_static if ppt_dir_static is not None else Path(td) / "ppt_pngs"
-        engine, count, errors = render_pptx_to_pngs(pptx_path, ppt_dir)
+        engine, count, errors = render_pptx_to_pngs(pptx_path, ppt_dir,
+                                                    only_indices=only_indices)
         result["errors"].update(errors)
+        result["only_indices"] = sorted(only_indices) if only_indices else None
 
         if engine is None:
             result["skipped"] = "no-renderer"
@@ -428,7 +462,8 @@ def self_check(pptx_path: Path, html_screenshots_dir: Path,
 
     # 终端报告
     if verbose:
-        print(f"\n[self-check] 渲染器 {engine}  ·  {len(result['pages'])} 页（无像素 diff 比较 — 视觉判断交 Stage 5b audit）")
+        mode_tag = f"  ·  增量重渲页 {sorted(only_indices)}" if only_indices else ""
+        print(f"\n[self-check] 渲染器 {engine}  ·  {len(result['pages'])} 页{mode_tag}（无像素 diff 比较 — 视觉判断交 Stage 5b audit）")
         if result["warnings"]:
             n_layout = sum(1 for p in result["warnings"] if p["level"] == "LAYOUT")
             n_pic = sum(1 for p in result["warnings"] if p["level"] == "FULLSLIDE_PIC")

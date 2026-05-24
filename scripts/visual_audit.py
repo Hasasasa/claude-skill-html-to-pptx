@@ -15,11 +15,11 @@ AUDIT_PROMPT_MD = """# Visual Audit
 
 ## 流程
 
-1. 读 `audit_index.json` 拿到页清单
-2. **按 batch 并行 dispatch sub-agent 看图**（详见下"并行执行"）—— 每个 Agent 处理 3-4 页一批
+1. 读 `audit_index.json` 拿到页清单。若 `incremental_mode=true`，**只看 `fresh_indices` 列出的页**——其它页是上轮缓存的 compare 图，本轮无需复审
+2. **按 batch 并行 dispatch sub-agent 看图**（详见下"并行执行"）—— 每个 Agent 处理 3-4 页一批。增量模式下只对 fresh_indices 分发
 3. 主 agent 收回各 sub-agent 的 findings 文本（每个含若干 `## page NN` 块），按页号拼成 `audit_findings.md`（首轮）或 `audit_findings_round_N.md`（迭代轮）
-4. **逐项做最小局部 HTML 修改**：每个 finding 只改让它消失的那一处。**不**追溯根因、**不**做 finding 列表外的"顺手优化"、**不**跨 finding 做结构性重构。同一 finding 试改 ≥ 2 次仍不 OK，停下来告诉用户。判定标准：diff 行数 ≤ findings 数 × 3 行
-5. 重跑 `convert.py`，回到第 2 步
+4. **每个 finding 内部做最小局部 HTML 修改**（只改让它消失的那一处，不扩散）：**不**追溯根因、**不**做 finding 列表外的"顺手优化"、**不**跨 finding 做结构性重构。同一 finding 试改 ≥ 2 次仍不 OK，停下来告诉用户。判定标准：diff 行数 ≤ findings 数 × 3 行
+5. **本轮所有 finding 都改完再重跑** `convert.py` —— 不要改一个跑一次。一轮 = 一批 HTML 编辑 + 一次 convert + 一次 audit。重跑命令带上 `--only-slides N1,N2,...`（本轮被改过的页号），Stage 5a 只重渲这些页、Stage 5b 只重建这些页的 compare，其它页直接复用缓存——可省 60-80% 时间。例外：本轮改的是**全局 CSS / 字体 / deck-level 样式**（影响所有页），不带 --only-slides 全量重跑。重跑后回到第 1 步
 6. 所有页 OK 或仅剩 LOW 才交付
 
 ## 并行执行（强制）
@@ -138,8 +138,13 @@ def build_compare_image(html_png: Path, ppt_png: Path, out_path: Path, page_idx:
 
 def build_audit_package(pptx_path: Path, html_screenshots_dir: Path, ppt_screenshots_dir: Path,
                         self_check_result: dict, preflight_result: dict | None,
-                        out_dir: Path) -> dict:
+                        out_dir: Path,
+                        only_indices: set[int] | None = None) -> dict:
     """产出 audit 物料包：compare 图 × N + audit_index.json + audit_prompt.md。
+
+    only_indices 给定时走增量：只对列出的页重建 compare 图，其它页保留 out_dir 里上轮的
+    slide_NN_compare.png（缓存缺失则兜底重建）。audit_index.json 标记每页 fresh=true/false，
+    上游 agent 看 fresh_indices 决定本轮要复审哪些页。
 
     返回 dict 描述包内容（方便 convert.py 在终端打印）。
     """
@@ -153,10 +158,19 @@ def build_audit_package(pptx_path: Path, html_screenshots_dir: Path, ppt_screens
     pages_by_idx = {p["idx"]: p for p in self_check_result.get("pages", [])}
     preflight_by_idx = {s["index"]: s for s in (preflight_result or {}).get("slides", [])}
 
+    fresh_set: set[int] = set()
+    skipped_set: set[int] = set()
     for i in range(n):
         idx = i + 1
         compare_path = out_dir / f"slide_{idx:02d}_compare.png"
-        ok = build_compare_image(html_pngs[i], ppt_pngs[i], compare_path, idx)
+        must_rebuild = (only_indices is None
+                        or idx in only_indices
+                        or not compare_path.exists())
+        if must_rebuild:
+            build_compare_image(html_pngs[i], ppt_pngs[i], compare_path, idx)
+            fresh_set.add(idx)
+        else:
+            skipped_set.add(idx)
         page_info = pages_by_idx.get(idx, {})
         preflight_info = preflight_by_idx.get(idx, {})
         risks = [r["code"] for r in preflight_info.get("risks", [])]
@@ -168,6 +182,7 @@ def build_audit_package(pptx_path: Path, html_screenshots_dir: Path, ppt_screens
             "structural_level": page_info.get("level"),
             "preflight_risks": risks,
             "preflight_confidence": preflight_info.get("confidence"),
+            "fresh": idx in fresh_set,
         })
 
     index_data = {
@@ -176,6 +191,9 @@ def build_audit_package(pptx_path: Path, html_screenshots_dir: Path, ppt_screens
         "total_pages": n,
         "instructions_file": "audit_prompt.md",
         "findings_output": "audit_findings.md",
+        "incremental_mode": only_indices is not None,
+        "fresh_indices": sorted(fresh_set),
+        "cached_indices": sorted(skipped_set),
         "pages": pages_meta,
         "self_check_summary": {
             "engine": self_check_result.get("engine"),
@@ -190,6 +208,9 @@ def build_audit_package(pptx_path: Path, html_screenshots_dir: Path, ppt_screens
     return {
         "out_dir": str(out_dir),
         "pages": n,
+        "fresh": sorted(fresh_set),
+        "cached": sorted(skipped_set),
+        "incremental": only_indices is not None,
         "index": str(out_dir / "audit_index.json"),
         "prompt": str(out_dir / "audit_prompt.md"),
     }
