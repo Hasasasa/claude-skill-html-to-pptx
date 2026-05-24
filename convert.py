@@ -5,6 +5,7 @@ Usage: python convert.py <input.html> [--out output.pptx] [--no-embed-fonts] ...
 流水线：preflight → measure → assemble → embed_fonts → self_check → visual_audit
 """
 import argparse
+import json
 import shutil
 import sys
 import tempfile
@@ -61,7 +62,14 @@ def convert(html_path: Path, out_path: Path, keep_screenshots: bool, embed_fonts
         intermediate_pptx = tmp_dir / "no_fonts.pptx"
 
         # anchor_json 控制 measurements.json + HTML 参考图 + svg 资源的落盘位置
-        if keep_screenshots:
+        # audit 开启时强制落 audit cache dir，让 measurement + HTML 参考图 + svg 资源在轮间持久化
+        # （--only-slides 增量重跑要复用上轮的 cached measurement / 未变更页的 HTML PNG / SVG asset）
+        # cleanup 已经删 <out>_audit/，所以 cache 不会泄漏到交付物
+        if do_visual_audit:
+            audit_cache_dir = out_path.parent / f"{out_path.stem}_audit" / "_cache"
+            audit_cache_dir.mkdir(parents=True, exist_ok=True)
+            anchor_json = audit_cache_dir / "measurements.json"
+        elif keep_screenshots:
             anchor_json = out_path.parent / f"{out_path.stem}_measurements.json"
             anchor_json.parent.mkdir(parents=True, exist_ok=True)
         else:
@@ -82,10 +90,51 @@ def convert(html_path: Path, out_path: Path, keep_screenshots: bool, embed_fonts
             print(f"[preflight] 耗时 {time.perf_counter()-t0:.2f}s")
 
         # 1) measure（结果通过 dict 在内存里传递；anchor 仅用于 svg / 截图资源定位）
+
+        # 增量模式预检：要复用上轮 measurement，必须有 cached 文件 + 结构正确
+        effective_only_indices = only_indices
+        prior_measurement = None
+        if effective_only_indices is not None:
+            if not anchor_json.exists():
+                print(f"[only-slides] 找不到上轮 cached measurement ({anchor_json.name})——回退全量 measure")
+                effective_only_indices = None
+            else:
+                try:
+                    prior_measurement = json.loads(anchor_json.read_text(encoding="utf-8"))
+                    if not isinstance(prior_measurement, dict) or "slides" not in prior_measurement:
+                        raise ValueError("缓存格式不符（缺 'slides'）")
+                except Exception as e:
+                    print(f"[only-slides] 上轮 cache 读失败（{e}）——回退全量 measure")
+                    effective_only_indices = None
+                    prior_measurement = None
+
         t0 = time.perf_counter()
         meas = measure(html_path, anchor_json,
+                       only_indices=effective_only_indices,
                        no_screenshots=not measure_needs_screenshots, verbose=True)
         print(f"[measure]  {time.perf_counter()-t0:.2f}s")
+
+        # 增量合并：本轮 partial measurement 与上轮 cache 合并成全 deck
+        if effective_only_indices is not None and prior_measurement is not None:
+            partial_indices = meas.get("_partial_indices") or []
+            total = meas.get("_total")
+            prior_total = len(prior_measurement.get("slides") or [])
+            if total is None or total != prior_total:
+                print(f"[only-slides] HTML 页数变化（cache {prior_total} 页 vs 当前 {total} 页）"
+                      "——丢弃增量、重新全量 measure")
+                t0 = time.perf_counter()
+                meas = measure(html_path, anchor_json,
+                               no_screenshots=not measure_needs_screenshots, verbose=True)
+                print(f"[measure]  {time.perf_counter()-t0:.2f}s（重测）")
+            else:
+                merged_slides = list(prior_measurement["slides"])
+                for one_based_idx, slide_data in zip(partial_indices, meas["slides"]):
+                    merged_slides[one_based_idx - 1] = slide_data
+                meas = {"slides": merged_slides}
+                # 把合并后的全 deck 写回 cache，让下一轮读到最新版
+                anchor_json.write_text(json.dumps(meas, ensure_ascii=False, indent=2),
+                                       encoding="utf-8")
+                print(f"[only-slides] 合并 {partial_indices} 页 → 全 deck {len(merged_slides)} 页")
 
         # 1.5) auto-resolve fonts（按需从 GF 拉，CJK 走 variable 直链）
         # FONT_PLAN 启动为空，所有字体都在这里按需解析。HTML 含 CJK 字符就强制种子
@@ -270,11 +319,13 @@ def main():
                          "只在批量 / CI / 已知不需要 audit 时关闭")
     ap.add_argument("--only-slides", default=None,
                     help="增量重跑模式。逗号分隔的页号（1-based），如 '2,7,12'。"
-                         "measure/assemble/embed 仍全量跑（保 pptx 完整），但 Stage 5a 只渲染指定页到 PNG，"
-                         "Stage 5b 只重建指定页的 compare 图——其它页复用上轮缓存（_audit/_ppt_renders/ + slide_NN_compare.png）。"
-                         "典型用法：audit 修完几个页后，重跑时带这个 flag，省 60-80%% 时间。"
-                         "**前提**：上轮的 <out>_audit/ 目录还在（否则缓存未命中的页会自动全量渲染兜底）。"
-                         "**不要用**：改了全局 CSS / 新增/删除字体 / 改了 deck-level 样式时——这些会改变所有页的视觉，"
+                         "measure 只跑指定页（Playwright loop 跳过其它页，省 80%%+）+ 与上轮 cached "
+                         "measurement 合并；assemble/embed 仍全量（保 pptx 完整 + 字体子集覆盖全 deck）；"
+                         "Stage 5a 只渲指定页到 PNG；Stage 5b 只重建指定页的 compare 图——其它页全部复用上轮缓存。"
+                         "典型用法：audit 修完几个页后，重跑时带这个 flag，省 70%%+ 时间。"
+                         "**前提**：上轮的 <out>_audit/_cache/measurements.json 还在（被 cleanup 删过 / 第一次跑 → "
+                         "自动回退全量 measure 兜底，不报错）。"
+                         "**不要用**：改了全局 CSS / 新增/删除字体 / 改了 deck-level 样式时——这些会影响所有页，"
                          "必须不带本 flag 全量重跑")
     ap.add_argument("--install-user-fonts", action="store_true",
                     help="把解析到的非 CJK 字体安装到用户字体目录。"

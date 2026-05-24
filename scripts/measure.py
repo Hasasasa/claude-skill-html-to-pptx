@@ -599,11 +599,21 @@ def _shoot_marker_records(page, records, out_dir: Path):
 
 
 def measure(html_path: Path, out_json: Path | None = None, *,
-            single_index: int | None = None, no_screenshots: bool = True,
+            single_index: int | None = None,
+            only_indices: set[int] | None = None,
+            no_screenshots: bool = True,
             verbose: bool = True) -> dict:
     """实测 HTML 中所有 slide。返回 measurement dict。
     out_json 不为 None 时同步写盘；svg 截图始终落盘到 out_json 旁的 _svg_assets/。
+
+    only_indices（1-based set）= 增量模式：只 activate + 抓取这些页，HTML 参考截图也只
+    写这些页（其它页保留 anchor 旁的上轮 PNG）。返回 payload 含 _partial_indices / _total
+    元数据，调用方据此与上轮 cached measurement 合并。
+
+    single_index（0-based int，CLI 兼容）= 单页模式，互斥于 only_indices。
     """
+    if single_index is not None and only_indices is not None:
+        raise ValueError("measure: single_index 与 only_indices 互斥，只能给一个")
     html_path = Path(html_path).resolve()
     url = html_path.as_uri()
 
@@ -674,6 +684,12 @@ def measure(html_path: Path, out_json: Path | None = None, *,
 
         if single_index is not None:
             indices = [single_index]
+        elif only_indices is not None:
+            # 1-based 入参 → 0-based 内部循环
+            indices = sorted(i - 1 for i in only_indices)
+            out_of_range = [i + 1 for i in indices if i < 0 or i >= total]
+            if out_of_range:
+                raise ValueError(f"measure: only_indices {out_of_range} 超出 HTML 实际页数 {total}")
         else:
             indices = list(range(total))
 
@@ -732,6 +748,12 @@ def measure(html_path: Path, out_json: Path | None = None, *,
 
         if single_index is not None:
             payload = slides_data[0]
+        elif only_indices is not None:
+            payload = {
+                "slides": slides_data,
+                "_partial_indices": sorted(only_indices),
+                "_total": total,
+            }
         else:
             payload = {"slides": slides_data}
 

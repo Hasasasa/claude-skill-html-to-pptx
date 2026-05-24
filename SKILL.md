@@ -35,7 +35,7 @@ python <skill_dir>/convert.py <input.html>
 | `--no-verify` | 关闭 Stage 5a 结构化自检 |
 | `--no-visual-audit` | 关闭 Stage 5b 视觉 audit 物料产出。日常不要关 |
 | `--install-user-fonts` | 把自动解析到的非 CJK 字体装到用户字体目录（让 WPS 能正确渲染）。Win/macOS/Linux 都支持。**必须先问用户**，见下方"字体安装确认"章节 |
-| `--only-slides N,N,N` | **增量重跑**。逗号分隔的页号（1-based）。measure/assemble/embed 仍全量跑（保 pptx 完整），但 Stage 5a 只重渲指定页、Stage 5b 只重建指定页的 compare 图，其它页复用上轮缓存。audit 迭代轮专用，详见下方"增量重跑"章节 |
+| `--only-slides N,N,N` | **增量重跑**。逗号分隔的页号（1-based）。measure 只跑指定页 + 与上轮 cached measurement 合并；assemble/embed 仍全量；Stage 5a 只渲指定页；Stage 5b 只重建指定页的 compare 图——其它页全部复用上轮缓存。audit 迭代轮专用，详见下方"增量重跑"章节 |
 | `--cleanup` | 不做转换。删 input.pptx 旁的 audit / measurement / preflight 工作物，只保留 .pptx 本身。**最终交付前用**，见下方"工作流"末步 |
 
 ## 字体安装确认（重要）
@@ -117,7 +117,7 @@ sub-agent 只返回 findings 文本（含每页的 `## page NN` 块），主 age
 - **不**跨 finding 做结构性重构（"统一把所有 slide 的 font-family 显式声明"≠ 单个 finding 的最小修复）
 - 同一 finding 反复试改 ≥ 2 次仍不 OK，停下来告诉用户，**不要**继续扩大改动面
 
-本批 finding 改完一次性 `python convert.py <html> --only-slides <被改过的页号>` —— Stage 5a/5b 只重跑这些页，省 60-80% 时间。
+本批 finding 改完一次性 `python convert.py <html> --only-slides <被改过的页号>` —— measure / Stage 5a / Stage 5b 都只跑这些页，省 70%+ 时间。
 
 判定标准：你的 diff 行数 ≤ findings 数 × 3 行。超过这个量级说明在"乱发挥"。
 
@@ -129,15 +129,16 @@ sub-agent 只返回 findings 文本（含每页的 `## page NN` 块），主 age
 python convert.py <html> --only-slides 2,7,12
 ```
 
-省时机制：
-- measure / assemble / embed_fonts 仍全量跑（保 pptx 完整、字体子集正确）—— 全量这块 ~1-2 min，跑不掉
-- Stage 5a 渲染 PPT → PNG：只对列出的页 + 缓存缺失的页 export；其它页保留 `<out>_audit/_ppt_renders/slide_NN.png`
-- Stage 5b 重建 compare 图：只对列出的页 rebuild；其它页保留 `<out>_audit/slide_NN_compare.png`
+省时机制（每个 stage 单独走增量）：
+- **measure**：Playwright loop 只 activate + extract 指定页，HTML 参考截图也只写指定页（其它页保留 `<out>_audit/_cache/measurements_screenshots/` 里的上轮 PNG）。本轮 partial measurement 自动与上轮 cached 合并成全 deck，写回 cache 供下一轮用
+- **assemble / embed_fonts**：仍全量跑（用合并后的全 deck measurement），保 pptx 完整 + 字体子集覆盖全 deck —— 这两 stage 本身就快（< 2s），不优化
+- **Stage 5a 渲染 PPT → PNG**：只对列出的页 + 缓存缺失的页 export；其它页保留 `<out>_audit/_ppt_renders/slide_NN.png`
+- **Stage 5b 重建 compare 图**：只对列出的页 rebuild；其它页保留 `<out>_audit/slide_NN_compare.png`
 - `audit_index.json` 标 `incremental_mode: true`、`fresh_indices: [2,7,12]`、`cached_indices: [...]`、每页 `fresh: true/false`
 
 并行 audit 时**只对 `fresh_indices` 分 batch 分发 sub-agent**——cached 页本轮无视觉变化，不必复审。
 
-**前提条件**：上轮的 `<out>_audit/` 目录还在（含 `_ppt_renders/` + compare 图）。被 `--cleanup` 删过 / 第一次跑 / 缓存丢失的页，本轮自动全量渲染兜底，不会出错。
+**前提条件**：上轮的 `<out>_audit/` 目录还在（含 `_cache/measurements.json` + `_cache/measurements_screenshots/` + `_ppt_renders/` + compare 图）。被 `--cleanup` 删过 / 第一次跑 / cache 文件丢失：measure 自动回退全量；individual PNG 缓存丢失的页自动全量渲染兜底。**HTML 页数变化**（增减 slide）也自动检测并回退全量 measure。
 
 **不要在以下情况用 `--only-slides`**（视觉影响溢出列出的页，缓存会假阴性）：
 - 改了**全局 CSS**（`<style>` 块、根选择器、`.slide` 通用样式等）
