@@ -18,7 +18,7 @@
 - 翻页 / 移动容器在哪
 - 各 slide 的自然 display
 - 字体实际渲染回退到了什么
-- 已知风险模式（多层 text-shadow / backdrop-filter / video / canvas / 非内置字体）
+- 已知风险模式（多层 text-shadow / video / canvas / 非内置字体）
 
 **反假设规则**：决策只能依赖运行时可观察事实——
 - ✅ `getComputedStyle` / `getBoundingClientRect` / 子树结构相似性 / 祖先链 CSS 属性
@@ -84,8 +84,9 @@
 
 **5b 视觉 audit**（VLM 判断）
 - 产出每页 HTML | PPT 双栏对比图 + `audit_prompt.md`
-- 上游 agent 逐页 Read 图，按 prompt 检查清单写 `audit_findings.md`
-- 迭代修复直到全 OK 或仅 LOW
+- 主 agent 按 batch（4 页/batch）并行 dispatch sub-agent 看图返回 findings；主 agent **不自己** Read compare 图，统一合并写 `audit_findings.md`（避免并发覆盖 + 主 agent context 开销）
+- 修复改 `audited.html`（首次 convert 自动创建的工作副本，不动源 HTML）
+- 增量重跑用 `--only-slides N,...` 只刷被改页，迭代直到全 OK 或仅 LOW
 
 **反假设规则**：
 - 不在 skill 里写 collision avoidance 死规则——规则覆盖窄、副作用大

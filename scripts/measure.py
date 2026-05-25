@@ -82,7 +82,14 @@ EXTRACT_JS = r"""
 
   // 标记一个节点是否为 "text leaf"：包含 textContent 但所有子节点要么是文本节点，要么是 inline 装饰（em/span 等没有进一步分割结构的）
   // 简化：只要这个元素的 children 中没有任何 block 级元素，就算 text leaf。
-  const BLOCK_TAGS = new Set(['DIV','SECTION','ARTICLE','HEADER','FOOTER','MAIN','NAV','P','H1','H2','H3','H4','H5','H6','UL','OL','LI','FIGURE','FIGCAPTION','TABLE','PRE','SVG','IMG','CANVAS','VIDEO']);
+  // 漏 ASIDE 这类块元素会让父容器的 inline-group 误把整个 <aside>...</aside> 当 inline 吞掉，
+  // 父 walk 末的 block-recursion 也不会下钻 aside，aside 子树全部不发独立 record。
+  // HTML5 sectioning + grouping content 全列：ASIDE / BLOCKQUOTE / DL / DT / DD / FORM / ADDRESS / HR / DETAILS / SUMMARY。
+  const BLOCK_TAGS = new Set(['DIV','SECTION','ARTICLE','ASIDE','HEADER','FOOTER','MAIN','NAV',
+                              'P','H1','H2','H3','H4','H5','H6','UL','OL','LI',
+                              'FIGURE','FIGCAPTION','TABLE','PRE','BLOCKQUOTE',
+                              'DL','DT','DD','FORM','ADDRESS','HR','DETAILS','SUMMARY',
+                              'SVG','IMG','CANVAS','VIDEO']);
   const isAtomicInline = (node) => {
     if (!node || node.nodeType !== 1) return false;
     if (BLOCK_TAGS.has(node.tagName.toUpperCase())) return false;
@@ -97,13 +104,51 @@ EXTRACT_JS = r"""
   };
   // svg / img 等元素即便不是 HTML 块级，也要阻断 text-leaf 判定，
   // 否则容器里同时存在 <svg> 与 <span> 文本时,会被错误地当作纯文本叶子整体吞掉。
+  // flex/grid 容器 + spacing 类 justify-content + 2+ 子 = "布局拉开"模式：
+  // 子节点在容器内被推到两端 / 等距分布，单 leaf BCR 会跨整个空白区，
+  // OOXML 单 textbox 表达不了"AGENDA 左对齐 + 时间 右对齐"。
+  // 必须每个子节点独立 record 各带自己 BCR。
+  const SPACING_JUSTIFY = new Set(['space-between','space-around','space-evenly',
+                                    'end','flex-end','right']);
+  const isFlexSpacingContainer = (el) => {
+    if (!el || el.nodeType !== 1 || el.children.length < 2) return false;
+    const s = getComputedStyle(el);
+    const isFG = s.display === 'flex' || s.display === 'inline-flex' ||
+                 s.display === 'grid' || s.display === 'inline-grid';
+    return isFG && SPACING_JUSTIFY.has(s.justifyContent);
+  };
   const isTextLeaf = (el) => {
     if (!el.textContent || !el.textContent.trim()) return false;
+    if (isFlexSpacingContainer(el)) return false;
     for (const ch of el.children) {
       if (BLOCK_TAGS.has(ch.tagName.toUpperCase())) return false;
       if (isAtomicInline(ch)) return false;
     }
     return true;
+  };
+
+  // ::before / ::after 伪元素的 string content 抽取。
+  // 伪元素不在 DOM 里（childNodes 找不到），但 getComputedStyle(el, '::before').content
+  // 能拿到。只收 string literal（最常见：装饰前缀 ↑↓、列表 marker、徽章"NEW"、引号）。
+  // 跳过 url() / attr() / counter() / open-quote 等复杂值——它们极少作为"该可编辑的文字"使用。
+  // 几何不用调整：浏览器把伪元素文字算在父 BCR 里，textbox 已经包了那段宽度。
+  const extractPseudoRun = (el, pseudo) => {
+    const s = getComputedStyle(el, pseudo);
+    const c = s.content;
+    if (!c || c === 'none' || c === 'normal') return null;
+    const m = c.match(/^["'](.*)["']$/);
+    if (!m || !m[1]) return null;
+    return {
+      text: m[1],
+      fontFamily: s.fontFamily,
+      fontSize: parseFloat(s.fontSize),
+      fontWeight: s.fontWeight,
+      fontStyle: s.fontStyle,
+      color: s.color,
+      letterSpacing: s.letterSpacing,
+      textDecoration: s.textDecorationLine,
+      textShadow: s.textShadow,
+    };
   };
 
   // 富文本 runs：把一个 text leaf 拆成多个 run，每个 run 携带自己的 computed style
@@ -133,7 +178,11 @@ EXTRACT_JS = r"""
           runs.push({ text: '\n', linebreak: true });
           return;
         }
+        const before = extractPseudoRun(n, '::before');
+        if (before) runs.push(before);
         for (const ch of n.childNodes) walk(ch);
+        const after = extractPseudoRun(n, '::after');
+        if (after) runs.push(after);
       }
     };
     walk(el);
@@ -178,10 +227,13 @@ EXTRACT_JS = r"""
       return;
     }
 
-    // canvas（Chart.js / WebGL / 自绘图）— 整体作为 picture 截图嵌入
-    // canvas 像素无法用 OOXML 表达，但 measure 阶段已经等过动画稳定，
-    // 截首帧足以还原静态呈现（图表 / 背景纹理 / IP 装饰）。
-    if (el.tagName.toLowerCase() === 'canvas') {
+    // canvas / video — 整体作为 picture 截图嵌入
+    // - canvas（Chart.js / WebGL / 自绘图）：像素无法用 OOXML 表达；measure 已等过动画稳定，截首帧足以还原静态呈现
+    // - video：OOXML 无原生播放表达，落盘 PPT 里就是首帧图片（多数演示场景可接受）
+    // 两者复用同一 kind='canvas' + 同一 marker attr，命中 _MARKER_SHOOT_SPECS / assemble.py 已有 picture 分支；
+    // tag 字段保留原始 'canvas' / 'video'，audit / lessons-learned 端能识别来源。
+    const tagLow = el.tagName.toLowerCase();
+    if (tagLow === 'canvas' || tagLow === 'video') {
       const r = el.getBoundingClientRect();
       if (r.width > 0 && r.height > 0) {
         const canvasIndex = records.filter(x => x.kind === 'canvas').length;
@@ -190,7 +242,7 @@ EXTRACT_JS = r"""
         records.push({
           id: nodeId++,
           kind: 'canvas',
-          tag: 'canvas',
+          tag: tagLow,
           rect: rectRel(r),
           naturalSize: { w: el.offsetWidth, h: el.offsetHeight },
           rotation: cumulativeRotation(el),
@@ -236,7 +288,11 @@ EXTRACT_JS = r"""
         if (el !== slide && isClippingContainerWithTransformedChildren(s, el)) {
           return;
         }
-        // 其他情况（背景图 / box-shadow / 伪元素装饰）：子节点继续画在截图之上
+        // 其他情况（背景图 / box-shadow / 伪元素装饰 / filter / mix-blend-mode /
+        // backdrop-filter / 不可表达 transform）：截图天然只截装饰（_DECO_HIDE_FOREGROUND_JS
+        // 在截图前会 hide 带文字的子元素 + 把 deco 自身的 color 设透明），文字另发
+        // 矢量记录画在截图之上，保持可编辑。代价：filter/blend/skew 等视觉效果不会
+        // 应用到文字本身（文字 crisp）；客户绝大多数场景偏好可编辑文字。
       }
     }
 
@@ -276,6 +332,8 @@ EXTRACT_JS = r"""
           display: s.display,
           alignItems: s.alignItems,
           justifyContent: s.justifyContent,
+          // 竖排：vertical-rl / vertical-lr / sideways-* → assemble 翻译成 bodyPr vert
+          writingMode: s.writingMode,
         },
         deco: { hasBg, bg, borderTop, borderBottom, borderLeft, borderRight,
                 borderColor: s.borderTopColor,
@@ -313,6 +371,22 @@ EXTRACT_JS = r"""
       });
     }
 
+    // flex/grid + spacing 容器：每个直接子（element 或非空 text node）作为独立 flex item 单独 emit。
+    // - 不能合并多 item 进同一 group：合并 = 再把容器拉开的间距吞回去
+    // - 不能只走 el.children：会丢直接 text node 这种 anonymous flex item
+    //   （如 `<div display:flex justify-between>AGENDA<span>09:00</span></div>` 的"AGENDA"）
+    // - 跳过 block-only 过滤（要带上 <span> 之类 inline 子项）
+    if (isFlexSpacingContainer(el)) {
+      for (const ch of el.childNodes) {
+        if (ch.nodeType === 1) {
+          walk(ch);
+        } else if (ch.nodeType === 3 && ch.nodeValue && ch.nodeValue.trim()) {
+          emitInlineGroup([ch], el);
+        }
+      }
+      return;
+    }
+
     // 处理"混合容器"：当 el 既有 block 子，又有直接挂着的 text node / inline 元素，
     // 直接文本节点不会进入 el.children 遍历也不属于 isTextLeaf 分支，
     // 必须单独抓取为 inline-group text 记录，否则会丢字（典型：callout）
@@ -324,6 +398,104 @@ EXTRACT_JS = r"""
     }
   };
 
+  // emit 单个 inline group（trim 过 <br> 的节点列表）→ 一条 text 记录。
+  // 抽出公用 helper：emitInlineGroupsAround（常规混合容器）与 flex-spacing 容器分支共享。
+  const emitInlineGroup = (trimmed, hostEl) => {
+    if (!trimmed.length) return;
+    const range = document.createRange();
+    range.setStartBefore(trimmed[0]);
+    range.setEndAfter(trimmed[trimmed.length - 1]);
+    const rects = range.getClientRects();
+    if (!rects.length) return;
+    // 取整组并集 rect（多行时 getBoundingClientRect 会给到完整范围）
+    const atomicEl = trimmed.length === 1 && isAtomicInline(trimmed[0]) ? trimmed[0] : null;
+    const r = atomicEl ? atomicEl.getBoundingClientRect() : range.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return;
+    // 跳过纯空白（trim 后没文本）
+    const txt = (atomicEl ? atomicEl.textContent : range.toString()).replace(/\s+/g, ' ').trim();
+    if (!txt) return;
+
+    // 用 trimmed 组的代表元素取样式：第一个 element 节点；找不到就用 hostEl
+    // （用 trimmed 而非原 group：原 group 里如果首节点是 <br> 会把 styleHost 错设成 br）
+    let styleHost = hostEl;
+    for (const n of trimmed) { if (n.nodeType === 1) { styleHost = n; break; } }
+    const gs = getComputedStyle(styleHost);
+    const bg = gs.backgroundColor;
+    const hasBg = bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent';
+    const borderTop = parseFloat(gs.borderTopWidth) > 0;
+    const borderBottom = parseFloat(gs.borderBottomWidth) > 0;
+    const borderLeft = parseFloat(gs.borderLeftWidth) > 0;
+    const borderRight = parseFloat(gs.borderRightWidth) > 0;
+
+    // 抽取 runs（遍历每个 group 成员）。
+    // 用 trimmed 抽 runs：首尾 br 不进 runs（避免 OOXML 多出空行把单行文本撑高错位）。
+    const runs = [];
+    const walkInline = (n) => {
+      if (n.nodeType === 3) {
+        if (!n.nodeValue) return;
+        // 直接文本节点（如 flex-spacing 容器的 anonymous flex item）parentElement 就是 hostEl
+        const p = n.parentElement || hostEl;
+        const ps = getComputedStyle(p);
+        runs.push({
+          text: n.nodeValue,
+          fontFamily: ps.fontFamily,
+          fontSize: parseFloat(ps.fontSize),
+          fontWeight: ps.fontWeight,
+          fontStyle: ps.fontStyle,
+          color: ps.color,
+          letterSpacing: ps.letterSpacing,
+          textDecoration: ps.textDecorationLine,
+          textShadow: ps.textShadow,
+        });
+      } else if (n.nodeType === 1) {
+        if (n.tagName === 'BR') { runs.push({ text: '\n', linebreak: true }); return; }
+        const before = extractPseudoRun(n, '::before');
+        if (before) runs.push(before);
+        for (const c of n.childNodes) walkInline(c);
+        const after = extractPseudoRun(n, '::after');
+        if (after) runs.push(after);
+      }
+    };
+    for (const n of trimmed) walkInline(n);
+
+    records.push({
+      id: nodeId++,
+      kind: 'text',
+      tag: styleHost.tagName.toLowerCase() + '#inline',
+      className: styleHost.className || '',
+      rect: rectRel(r),
+      runs,
+      style: {
+        color: gs.color,
+        fontFamily: gs.fontFamily,
+        fontSize: parseFloat(gs.fontSize),
+        fontWeight: gs.fontWeight,
+        fontStyle: gs.fontStyle,
+        lineHeight: gs.lineHeight,
+        letterSpacing: gs.letterSpacing,
+        textAlign: gs.textAlign,
+        textTransform: gs.textTransform,
+        opacity: gs.opacity,
+        paddingTop: parseFloat(gs.paddingTop) || 0,
+        paddingRight: parseFloat(gs.paddingRight) || 0,
+        paddingBottom: parseFloat(gs.paddingBottom) || 0,
+        paddingLeft: parseFloat(gs.paddingLeft) || 0,
+        display: gs.display,
+        alignItems: gs.alignItems,
+        justifyContent: gs.justifyContent,
+        writingMode: gs.writingMode,
+      },
+      deco: { hasBg, bg, borderTop, borderBottom, borderLeft, borderRight,
+              borderColor: gs.borderTopColor,
+              borderTopWidth: parseFloat(gs.borderTopWidth),
+              borderBottomWidth: parseFloat(gs.borderBottomWidth),
+              borderLeftWidth: parseFloat(gs.borderLeftWidth),
+              borderRightWidth: parseFloat(gs.borderRightWidth),
+              borderRadius: gs.borderTopLeftRadius },
+      text: txt,
+    });
+  };
+
   // 把 el 的子节点按 block 边界切成若干 inline group；每个 group 单独发一个 text 记录
   const emitInlineGroupsAround = (el) => {
     const groups = [];
@@ -331,9 +503,10 @@ EXTRACT_JS = r"""
     for (const ch of el.childNodes) {
       const isElem = ch.nodeType === 1;
       const isBlock = isElem && BLOCK_TAGS.has(ch.tagName.toUpperCase());
-      if (isBlock || isAtomicInline(ch)) {
+      const atomic = isAtomicInline(ch);
+      if (isBlock || atomic) {
         if (cur) { groups.push(cur); cur = null; }
-        if (isAtomicInline(ch)) groups.push([ch]);
+        if (atomic) groups.push([ch]);
         continue;
       }
       // text node 或 inline element
@@ -358,93 +531,7 @@ EXTRACT_JS = r"""
       while (trimmed.length && trimmed[trimmed.length - 1].nodeType === 1 && trimmed[trimmed.length - 1].tagName === 'BR') {
         trimmed = trimmed.slice(0, -1);
       }
-      if (!trimmed.length) continue;
-      const range = document.createRange();
-      range.setStartBefore(trimmed[0]);
-      range.setEndAfter(trimmed[trimmed.length - 1]);
-      const rects = range.getClientRects();
-      if (!rects.length) continue;
-      // 取整组并集 rect（多行时 getBoundingClientRect 会给到完整范围）
-      const atomicEl = trimmed.length === 1 && isAtomicInline(trimmed[0]) ? trimmed[0] : null;
-      const r = atomicEl ? atomicEl.getBoundingClientRect() : range.getBoundingClientRect();
-      if (r.width === 0 || r.height === 0) continue;
-      // 跳过纯空白（trim 后没文本）
-      const txt = (atomicEl ? atomicEl.textContent : range.toString()).replace(/\s+/g, ' ').trim();
-      if (!txt) continue;
-
-      // 用 trimmed 组的代表元素取样式：第一个 element 节点；找不到就用父 el
-      // （用 trimmed 而非原 group：原 group 里如果首节点是 <br> 会把 styleHost 错设成 br）
-      let styleHost = el;
-      for (const n of trimmed) { if (n.nodeType === 1) { styleHost = n; break; } }
-      const gs = getComputedStyle(styleHost);
-      const bg = gs.backgroundColor;
-      const hasBg = bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent';
-      const borderTop = parseFloat(gs.borderTopWidth) > 0;
-      const borderBottom = parseFloat(gs.borderBottomWidth) > 0;
-      const borderLeft = parseFloat(gs.borderLeftWidth) > 0;
-      const borderRight = parseFloat(gs.borderRightWidth) > 0;
-
-      // 抽取 runs（遍历每个 group 成员）
-      const runs = [];
-      const walkInline = (n) => {
-        if (n.nodeType === 3) {
-          if (!n.nodeValue) return;
-          const p = n.parentElement;
-          const ps = getComputedStyle(p);
-          runs.push({
-            text: n.nodeValue,
-            fontFamily: ps.fontFamily,
-            fontSize: parseFloat(ps.fontSize),
-            fontWeight: ps.fontWeight,
-            fontStyle: ps.fontStyle,
-            color: ps.color,
-            letterSpacing: ps.letterSpacing,
-            textDecoration: ps.textDecorationLine,
-            textShadow: ps.textShadow,
-          });
-        } else if (n.nodeType === 1) {
-          if (n.tagName === 'BR') { runs.push({ text: '\n', linebreak: true }); return; }
-          for (const c of n.childNodes) walkInline(c);
-        }
-      };
-      // 用 trimmed 抽 runs：首尾 br 不进 runs（避免 OOXML 多出空行把单行文本撑高错位）
-      for (const n of trimmed) walkInline(n);
-
-      records.push({
-        id: nodeId++,
-        kind: 'text',
-        tag: styleHost.tagName.toLowerCase() + '#inline',
-        className: styleHost.className || '',
-        rect: rectRel(r),
-        runs,
-        style: {
-          color: gs.color,
-          fontFamily: gs.fontFamily,
-          fontSize: parseFloat(gs.fontSize),
-          fontWeight: gs.fontWeight,
-          fontStyle: gs.fontStyle,
-          lineHeight: gs.lineHeight,
-          letterSpacing: gs.letterSpacing,
-          textAlign: gs.textAlign,
-          textTransform: gs.textTransform,
-          opacity: gs.opacity,
-          paddingTop: parseFloat(gs.paddingTop) || 0,
-          paddingRight: parseFloat(gs.paddingRight) || 0,
-          paddingBottom: parseFloat(gs.paddingBottom) || 0,
-          paddingLeft: parseFloat(gs.paddingLeft) || 0,
-          display: gs.display,
-          alignItems: gs.alignItems,
-          justifyContent: gs.justifyContent,
-        },
-        deco: { hasBg, bg, borderTop, borderBottom, borderLeft, borderRight,
-                borderColor: gs.borderTopColor,
-                borderTopWidth: parseFloat(gs.borderTopWidth),
-                borderBottomWidth: parseFloat(gs.borderBottomWidth),
-                borderLeftWidth: parseFloat(gs.borderLeftWidth),
-                borderRightWidth: parseFloat(gs.borderRightWidth),
-                borderRadius: gs.borderTopLeftRadius },
-        text: txt,
-      });
+      emitInlineGroup(trimmed, el);
     }
   };
 

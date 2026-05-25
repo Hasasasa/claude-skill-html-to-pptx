@@ -1,5 +1,8 @@
-# 本地沉淀，每个用户/团队各自维护，不上游
-references/lessons-learned-local.md
+# 本地沉淀工作副本（每用户一份；首次运行 convert.py 自动从 lessons-learned.md.example 生成）
+references/lessons-learned.md
+
+# 本机偏好配置，不上游（模板见 .config.local.toml.example）
+.config.local.toml
 
 # Python
 __pycache__/

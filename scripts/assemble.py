@@ -312,15 +312,21 @@ def add_shape_box(slide, rec):
     }
     active_sides = [k for k, (present, _) in sides.items() if present]
 
-    # 圆形检测：CSS border-radius >= 50% 或 >= min(w,h)/2 → 当作椭圆/圆
-    is_oval = _is_oval(deco.get("borderRadius", ""), r["w"], r["h"])
-    prst = MSO_SHAPE.OVAL if is_oval else MSO_SHAPE.RECTANGLE
+    # 圆角分流：CSS border-radius >= 50% 或 >= min(w,h)/2 → 椭圆 / pill / 矩形 三选一
+    # 接近方形 → OVAL；宽高悬殊 → ROUNDED_RECTANGLE + adj=0.5 (pill)；都不是 → RECTANGLE
+    kind = _round_kind(deco.get("borderRadius", ""), r["w"], r["h"])
+    prst = {"oval": MSO_SHAPE.OVAL,
+            "pill": MSO_SHAPE.ROUNDED_RECTANGLE,
+            "rect": MSO_SHAPE.RECTANGLE}[kind]
+    is_round = (kind != "rect")
 
     # 如果有填充色：画形状（不带 border，border 单独画线）
     fill_shape = None
     if deco.get("hasBg"):
         r_, g_, b_, a_ = parse_rgba(deco["bg"])
         shape = slide.shapes.add_shape(prst, x, y, w, h)
+        if kind == "pill":
+            shape.adjustments[0] = 0.5  # 圆角半径 = 短边 50%，端点完整半圆
         shape.fill.solid()
         shape.fill.fore_color.rgb = RGBColor(r_, g_, b_)
         # 把 CSS alpha 转成 OOXML 的 a:alpha（单位 1/1000 百分比，100000 = 100%）
@@ -333,6 +339,8 @@ def add_shape_box(slide, rec):
     # 4 边都有边框 → 用形状带 border 一次画完
     if len(active_sides) == 4 and not deco.get("hasBg"):
         shape = slide.shapes.add_shape(prst, x, y, w, h)
+        if kind == "pill":
+            shape.adjustments[0] = 0.5
         shape.fill.background()
         b_rgba = parse_rgba(deco.get("borderColor", "rgb(127,127,127)"))
         shape.line.color.rgb = make_rgb(b_rgba[:3])
@@ -343,8 +351,8 @@ def add_shape_box(slide, rec):
         _apply_rotation(shape, rec)
         return shape
 
-    # 椭圆形（仅有填充无 4 边边框）：完了直接 return，跳过下面"按需画线"
-    if is_oval and deco.get("hasBg"):
+    # oval / pill（仅有填充无 4 边边框）：完了直接 return，跳过下面"按需画线"
+    if is_round and deco.get("hasBg"):
         return fill_shape
 
     # 否则按需画线（border-top / border-bottom 等单侧情形）
@@ -363,26 +371,40 @@ def add_shape_box(slide, rec):
             _add_line(slide, x + w, y, x + w, y + h, rgb, bw, alpha)
 
 
-def _is_oval(border_radius: str, w_px: float, h_px: float) -> bool:
-    """判断元素是否应渲染为椭圆/圆。
-    标准：border-radius 是 "50%" 或更大百分比，或者 px 值 >= min(w,h)/2 * 0.9。
+def _round_kind(border_radius: str, w_px: float, h_px: float) -> str:
+    """border-radius + 元素宽高 → 'oval' | 'pill' | 'rect'。
+
+    - 半径不够大（< min(w,h)/2 * 0.9 或 < 50%）→ rect
+    - 半径够大 + 宽高接近方形（0.67 ≤ w/h ≤ 1.5）→ oval
+    - 半径够大 + 宽高悬殊 → pill（OOXML roundRect adj=0.5，两端完整半圆 + 中间矩形）
+
+    pill 阈值 1.5：低于这个宽高比的"扁形" oval 视觉上还能接受；超过就明显是 CSS pill 意图。
     """
     if not border_radius or border_radius == "0px":
-        return False
+        return "rect"
     s = str(border_radius).strip()
+    big = False
     if s.endswith("%"):
         try:
-            return float(s[:-1]) >= 50.0   # 去掉最后 1 个 "%" 字符，不是 2
+            big = float(s[:-1]) >= 50.0   # 去掉最后 1 个 "%" 字符
         except ValueError:
-            return False
-    if s.endswith("px"):
+            return "rect"
+    elif s.endswith("px"):
         try:
-            px = float(s[:-2])
-            # 至少要达到 短边/2 × 0.9 才算椭圆 / pill 形（防止小圆角误判）
-            return px >= min(w_px, h_px) / 2 * 0.9
+            # 至少要达到 短边/2 × 0.9 才算"贴边圆角"
+            big = float(s[:-2]) >= min(w_px, h_px) / 2 * 0.9
         except ValueError:
-            return False
-    return False
+            return "rect"
+    else:
+        return "rect"
+    if not big:
+        return "rect"
+    if w_px <= 0 or h_px <= 0:
+        return "oval"
+    ratio = w_px / h_px
+    if 0.67 <= ratio <= 1.5:
+        return "oval"
+    return "pill"
 
 
 def _set_fill_alpha(shape, alpha: float):
@@ -548,6 +570,14 @@ def add_text_box(slide, rec):
     # 必须与 tf.word_wrap 保持一致，否则 wrap 属性会覆盖 word_wrap 设置
     bodyPr = tf._txBody.find(qn("a:bodyPr"))
     bodyPr.set("wrap", "none" if no_auto_wrap else "square")
+    # 竖排：CSS writing-mode → OOXML bodyPr vert
+    # eaVert = 东亚竖排（CJK 字符保持正向，从右向左排列），覆盖 vertical-rl 主用例。
+    # vertical-lr 用 eaVert 亦可（OOXML 没有 LTR 竖排原语，渲染器一般按列折行）。
+    # sideways-* 在浏览器把字符整体旋转 90°，OOXML 没对应原语，落到 eaVert 兜底
+    # 视觉会和浏览器有差异；纯 Latin 竖排建议用 transform: rotate(-90deg) 代替写法。
+    wm = (rec.get("style", {}).get("writingMode") or "").lower()
+    if wm and wm not in ("horizontal-tb", "lr", "lr-tb"):
+        bodyPr.set("vert", "eaVert")
     # 垂直 anchor：HTML 用 flex/grid + align-items 居中时，OOXML 用 anchor 翻译
     style_for_anchor = rec.get("style", {})
     display = (style_for_anchor.get("display") or "").lower()

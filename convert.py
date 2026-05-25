@@ -46,6 +46,9 @@ def convert(html_path: Path, out_path: Path, keep_screenshots: bool, embed_fonts
     if not html_path.exists():
         raise FileNotFoundError(html_path)
 
+    # audit 产物根目录：cache / ppt_renders / compare 图等全部挂这下
+    audit_dir = out_path.parent / f"{out_path.stem}_audit"
+
     # 同进程 import：避开 3 次 Python 启动开销
     from preflight import preflight
     from measure import measure
@@ -66,7 +69,7 @@ def convert(html_path: Path, out_path: Path, keep_screenshots: bool, embed_fonts
         # （--only-slides 增量重跑要复用上轮的 cached measurement / 未变更页的 HTML PNG / SVG asset）
         # cleanup 已经删 <out>_audit/，所以 cache 不会泄漏到交付物
         if do_visual_audit:
-            audit_cache_dir = out_path.parent / f"{out_path.stem}_audit" / "_cache"
+            audit_cache_dir = audit_dir / "_cache"
             audit_cache_dir.mkdir(parents=True, exist_ok=True)
             anchor_json = audit_cache_dir / "measurements.json"
         elif keep_screenshots:
@@ -193,13 +196,13 @@ def convert(html_path: Path, out_path: Path, keep_screenshots: bool, embed_fonts
 
         # 4) 自检（默认开启）— 自检异常不影响 pptx 产出
         self_check_result = None
-        html_screenshots_dir = anchor_json.with_suffix("").parent / (anchor_json.stem + "_screenshots")
+        html_screenshots_dir = anchor_json.parent / f"{anchor_json.stem}_screenshots"
         if do_verify:
             t0 = time.perf_counter()
             # 视觉 audit 需要 PPT 渲染结果落盘
             ppt_keep_dir = None
             if do_visual_audit:
-                ppt_keep_dir = out_path.parent / f"{out_path.stem}_audit" / "_ppt_renders"
+                ppt_keep_dir = audit_dir / "_ppt_renders"
             try:
                 self_check_result = self_check(
                     out_path, html_screenshots_dir,
@@ -216,7 +219,6 @@ def convert(html_path: Path, out_path: Path, keep_screenshots: bool, embed_fonts
         if do_visual_audit and self_check_result and self_check_result.get("engine"):
             t0 = time.perf_counter()
             from visual_audit import build_audit_package
-            audit_dir = out_path.parent / f"{out_path.stem}_audit"
             ppt_pngs_dir = audit_dir / "_ppt_renders"
             try:
                 pkg = build_audit_package(
@@ -348,7 +350,40 @@ def main():
         return
 
     in_path = Path(args.input)
-    out_path = Path(args.out) if args.out else in_path.with_suffix(".pptx")
+
+    # 工作副本：原 HTML 永远不动，所有 audit 修复改 .audited.html
+    # 首次跑 convert 自动 cp；agent 后续轮 input 用 audited.html；误传源 HTML 也被内部切回 audited
+    if (in_path.suffix.lower() == ".html"
+            and not in_path.name.endswith(".audited.html")
+            and in_path.exists()):
+        audited = in_path.with_name(in_path.stem + ".audited.html")
+        if not audited.exists():
+            shutil.copy2(in_path, audited)
+            print(f"[work-copy] 已创建工作副本：{audited.name}")
+        else:
+            print(f"[work-copy] 复用已有工作副本：{audited.name}")
+        print(f"[work-copy] audit 修复改这个文件；下一轮 convert input 用此路径")
+        in_path = audited
+
+    if args.out:
+        out_path = Path(args.out)
+    elif in_path.name.endswith(".audited.html"):
+        # foo.audited.html → foo.pptx（去掉 .audited，保持输出名稳定）
+        out_path = in_path.with_name(in_path.name[: -len(".audited.html")] + ".pptx")
+    else:
+        out_path = in_path.with_suffix(".pptx")
+    # 读 .config.local.toml：fonts.auto_install = "yes" 等价于显式给 --install-user-fonts
+    # "no" 强制关掉（即使用户显式加了 flag 也覆盖）；"ask" 不动 CLI（由 agent 走问询流程）
+    from local_config import fonts_auto_install, seed_lessons_learned
+    seed_lessons_learned()  # 首次运行 seed 本地 lessons-learned.md 工作副本
+    _fai = fonts_auto_install()
+    if _fai == "yes" and not args.install_user_fonts:
+        args.install_user_fonts = True
+        print("[config] fonts.auto_install=yes → 自动启用 --install-user-fonts")
+    elif _fai == "no" and args.install_user_fonts:
+        args.install_user_fonts = False
+        print("[config] fonts.auto_install=no → 忽略 --install-user-fonts")
+
     only_indices = _parse_only_slides(args.only_slides)
     if only_indices is not None:
         if args.no_verify:

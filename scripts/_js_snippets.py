@@ -56,6 +56,30 @@ DECO_HELPERS = r"""
     return false;
   };
 
+  // CSS transform 矩阵是否"非纯旋转+平移"（含 skew / 非均匀 scale）。
+  // 纯 rotate+translate 的 2D matrix 满足正交：a²+b² ≈ 1 且 c²+d² ≈ 1 且 a*c+b*d ≈ 0。
+  // 不满足 → OOXML 没原语表达（OOXML 只有 rot），必须走截图。
+  // 仅 translate 早就走 layout 路径，不在这里判定。
+  const isUnrepresentableTransform = (transformStr) => {
+    if (!transformStr || transformStr === 'none') return false;
+    const m = transformStr.match(/^matrix\(([^)]+)\)$/);
+    if (!m) return true;  // matrix3d 或关键字形式都当不可表达
+    const v = m[1].split(',').map(parseFloat);
+    const [a, b, c, d] = v;
+    const len1 = a*a + b*b;
+    const len2 = c*c + d*d;
+    const dot  = a*c + b*d;
+    const eps  = 0.005;
+    return Math.abs(len1 - 1) > eps || Math.abs(len2 - 1) > eps || Math.abs(dot) > eps;
+  };
+
+  // 元素 filter 是否"非平凡"：none / 空都不算。drop-shadow / blur / saturate 等都算。
+  const hasNontrivialFilter = (filterStr) => {
+    if (!filterStr) return false;
+    const t = filterStr.trim();
+    return t !== '' && t !== 'none';
+  };
+
   // 通用复杂装饰：命中任何一项 measure 就走"整块截图嵌入"路径
   const hasComplexDecoration = (s, el) => {
     if (s.backgroundImage && s.backgroundImage !== 'none') return true;
@@ -64,6 +88,14 @@ DECO_HELPERS = r"""
     if (hasPseudoDecoration(el, '::before')) return true;
     if (hasPseudoDecoration(el, '::after')) return true;
     if (isClippingContainerWithTransformedChildren(s, el)) return true;
+    // backdrop-filter（毛玻璃）— OOXML 无原语，走截图。截图天然包含被模糊的背景
+    if (s.backdropFilter && s.backdropFilter !== 'none') return true;
+    // filter（blur / drop-shadow / saturate / 等）— 同上
+    if (hasNontrivialFilter(s.filter)) return true;
+    // mix-blend-mode：浏览器截元素 BCR 时拿到的就是已混合的像素，OOXML 表达不了
+    if (s.mixBlendMode && s.mixBlendMode !== 'normal') return true;
+    // skew / 非均匀 scale：OOXML 只有 rot，其它非线性变换走截图
+    if (isUnrepresentableTransform(s.transform)) return true;
     return false;
   };
 """

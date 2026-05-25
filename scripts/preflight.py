@@ -10,7 +10,7 @@
 风险码（risk codes）：
 - R001 deco-on-slide-root         slide 根节点带 deco_snapshot 触发模式（最常见双层文字 bug）
 - R002 multi-layer-text-shadow    任意元素 text-shadow 含 2+ 阴影（OOXML 只能表达单 outerShdw）
-- R003 backdrop-filter            backdrop-filter: blur 在 OOXML 无对应
+- R003 backdrop-filter            已自动走 deco_snapshot 兜底；保留信息性提示，不算阻塞风险
 - R004 video-element              <video> 帧不会转换
 - R005 webgl-or-canvas            canvas/WebGL 只能取静态帧
 - R006 tight-line-height          line-height < 0.9 的多行文本（PPT 行距会偏松）
@@ -181,14 +181,15 @@ SCAN_JS = r"""
       }
     }
 
-    // R003 backdrop-filter
+    // R003 backdrop-filter — 已自动走 deco_snapshot 兜底（_js_snippets.hasComplexDecoration）
+    // 保留为信息性提示，severity=low；audit agent 不应据此做 HTML workaround
     if (s.backdropFilter && s.backdropFilter !== 'none') {
       backdropCount++;
       if (backdropCount === 1) {
         risks.push({
           code: 'R003',
           name: 'backdrop-filter',
-          severity: 'medium',
+          severity: 'low',
           detail: s.backdropFilter.slice(0, 80),
           where: describe(el),
         });

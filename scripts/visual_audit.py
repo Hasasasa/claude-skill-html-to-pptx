@@ -18,8 +18,8 @@ AUDIT_PROMPT_MD = """# Visual Audit
 1. 读 `audit_index.json` 拿到页清单。若 `incremental_mode=true`，只看 `fresh_indices` 列出的页
 2. 按 batch 并行 dispatch sub-agent 看图（强制，不论页数；详见下"并行执行"）
 3. 主 agent 收回各 sub-agent 的 findings 文本（每个含若干 `## page NN` 块），按页号拼成 `audit_findings.md`（首轮）或 `audit_findings_round_N.md`（迭代轮）
-4. 每个 finding 内部做最小局部 HTML 修改（只改让它消失的那一处）：不追溯根因、不做 finding 列表外的"顺手优化"、不跨 finding 做结构性重构。同一 finding 试改 ≥ 2 次仍不 OK，停下来告诉用户。判定标准：diff 行数 ≤ findings 数 × 3 行
-5. 本轮所有 finding 改完一次性 `convert.py <html> --only-slides N1,N2,...`（本轮被改过的页号）。例外：改了全局 CSS / 字体 / deck-level 样式 → 不带 `--only-slides`，全量重跑。回到第 1 步
+4. 每个 finding 内部做最小局部 HTML 修改（只改让它消失的那一处）：不追溯根因、不做 finding 列表外的"顺手优化"、不跨 finding 做结构性重构。同一 finding 试改 ≥ 2 次仍不 OK，停下来告诉用户。判定标准：diff 行数 ≤ findings 数 × 3 行。**修改对象：`<input>.audited.html`（首次 convert 自动 cp 的工作副本），不动源 HTML**
+5. 本轮所有 finding 改完一次性 `convert.py <input>.audited.html --only-slides N1,N2,...`（本轮被改过的页号）。例外：改了全局 CSS / 字体 / deck-level 样式 → 不带 `--only-slides`，全量重跑。回到第 1 步
 6. 所有页 OK 或仅剩 LOW 才交付
 
 ## 并行执行（强制，不论页数）

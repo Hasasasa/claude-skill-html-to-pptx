@@ -1,0 +1,16 @@
+# 本机偏好（gitignored，每个用户 / 每台机器一份）。
+# 复制本文件为 `.config.local.toml`（去掉 .example）即生效。
+# 首次使用通常由 agent 通过 AskUserQuestion 收集偏好后自动 Write 这个文件——你不用手动建。
+
+[fonts]
+# 把自动解析到的非 CJK 字体装到用户字体目录（让 WPS / PowerPoint 都按系统字体渲染）。
+#   "yes" — convert.py 自动加 --install-user-fonts，agent 不再询问
+#   "no"  — 永不加，agent 不再询问
+#   "ask" — 每次让 agent 询问（默认；agent 拿到答复后会改写此项）
+auto_install = "ask"
+
+[cleanup]
+# 工作流末步（audit 全部通过 / 仅剩 LOW 之后）是否自动 cleanup 中间产物。
+#   "clean" — agent 自动跑 `convert.py <out>.pptx --cleanup`，不打扰用户（默认）
+#   "keep"  — agent 跳过 cleanup，audit 产物全部保留给用户
+default = "clean"

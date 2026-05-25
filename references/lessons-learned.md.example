@@ -1,0 +1,90 @@
+# 症状索引
+
+读完 self-check 报告 + compare 图后用这份文件挑下一步排查方向。条目不是终极答案，是 checkpoint。
+
+## 写到哪
+
+本文件（在本机叫 `lessons-learned.md`）是**用户独立的本地工作副本**（gitignored）。首次 `convert.py` 自动从 `lessons-learned.md.example` seed 出来。
+
+- 通用问题（任何 deck 都可能撞）→ **HTML 反模式** 或 **OOXML 边界** 表
+- 本地业务 / 特定客户专属写法 → 任意 section 自由加新行（不会上游）
+- 想让上游 skill 一起收某条：**作者手动把 entry 复制回 `lessons-learned.md.example`** 再 commit；选择性 curate，不是全推
+- 历史已修 bug 的具体诊断 → `git log` / `git blame scripts/measure.py scripts/assemble.py`，不在此
+
+## 快速分流
+
+1. 整页 / 空白页 → adapter activate + 隐藏态清理
+2. 文字缺失 → text-leaf 识别 + inline / block 混合容器
+3. SVG / canvas / 装饰缺失 → screenshot marker 记录 + PNG
+4. CJK / 字体渲染错 → OOXML `a:latin` / `a:ea` 和字体嵌入
+5. 不该换行的换行了 → 单行检测 + `bodyPr wrap`
+6. 颜色 / 透明度错 → rgba 解析 + alpha 传递
+7. 旋转错 → 区分 OOXML 形状 / 文字 vs 截图记录
+
+## 已知 regression checkpoint
+
+仍可能复发的非平凡 guard，撞到符号症状先查这里：
+
+- **整页变空，measure 只剩 1 条 `deco_snapshot`**：slide 根节点撞了 `isClippingContainerWithTransformedChildren`。`measure.py` 早退前有 `el !== slide` 守卫，被改坏就会复发
+- **`flex + align-items:center` 文字掉到容器下方**：`_text_box_size_px` 对 `display in (flex,grid)` + `alignItems in (center, flex-end, end)` 走 `cy = r.h`，不撑 `h * 1.4`。撑了就会偏出
+- **带 `<br>` 多行段盖到下一兄弟**：同上分支，`_has_explicit_break(rec)` → `cy = r.h`。自然换行（无 `<br>`）仍走 1.3× 撑高
+- **OOXML 重影 / 假粗体；typeface 是 `-apple-system` / `BlinkMacSystemFont`**：浏览器系统别名漏过 `GENERIC_FONT_KEYWORDS` 过滤；改 `assemble.py` 加这些 keyword 跳过，让 `first_font` 落到下一个真 family
+- **GF 字体已嵌入但 PowerPoint 渲染错字面**：GF `wght@400` src 可能指向 Medium 文件，缓存 TTF nameID=1 是 "Family Medium"，PowerPoint 匹配不上 → 回退系统字体。`font_resolver._normalize_to_slot` 强制改写 nameID=1/4 + `OS/2.usWeightClass`
+- **HTML 只用 weight 500+600，PPT 里两个权重一样**：resolver 全局分配：非斜体里离 400 最近 → regular 槽，离 700 最近 → bold 槽；`assemble.py` `b="1"` 阈值用 `weight >= 600`
+- **`overflow:hidden` 容器塞 transform 子（ribbon），PPT 变成一大块覆盖前景**：`hasComplexDecoration` 有 `isClippingContainerWithTransformedChildren` 触发；命中 → 整块截图 + walker `return`
+- **`<p>` 里 `<br><br>` 空段把尾部内容挤出框**：空 `<a:p>` 没 `endParaRPr.sz` 会回退 PPT 默认 18pt × 行高；`add_text_box` 必须给空段写 `endParaRPr.sz = fontSize * 50`
+- **`h1`/`h2` 带 `<br>` + 内联块，`<br>` 后那行盖下一段**：`emitInlineGroupsAround` 必须剥掉 group 首尾 `<br>`。**辨识**：记录 `tag === 'br#inline'` 一定是 bug
+
+## Self-Check 记录
+
+| 症状 | 原因 | 修复 |
+|---|---|---|
+| Stage 5a / 5b 跳过 — 没可用 pptx 渲染器 | PowerPoint COM 和 LibreOffice 都没装 | 装 Office 或 `apt install libreoffice` + `pip install pdf2image`；详情见 SKILL.md "渲染器要求" |
+| Stage 5a FULL-PIC 告警 | `<p:pic>` 盖了页面 ≥ ~98%，大概率 `deco_snapshot` 双层 bug | `dump_records.py` 查；确认 → 当前 deck HTML workaround + 报作者 |
+| Stage 5a LAYOUT 告警 | 两个文本框横向重叠但 HTML 度量分开 | `dump_records.py` 查该页；通常 flex/grid gap 折掉或字体度量差异 |
+| Audit compare 大面积字体回退 + 多页"标题与正文叠压" | PowerPoint COM `slide.Export()` 不读 pptx 嵌入 TTF，用系统字体；回退字体更宽 → 标题多换行挤压 | `--install-user-fonts` 重跑；详情见 SKILL.md "字体安装确认" |
+
+## HTML 反模式
+
+源 HTML 应避免的通用写法。
+
+| 模式 | 为什么破坏 PPT | HTML 改写 |
+|---|---|---|
+
+## OOXML 边界
+
+OOXML 或 PPT 渲染器表达不了的 CSS / DOM 模式；HTML 源要走替代通路。
+
+| CSS / DOM 模式 | OOXML 缺的能力 | HTML 替代通路 |
+|---|---|---|
+| 彩色 emoji（COLR / CPAL 字体） | PowerPoint / WPS 字形渲染不支持彩色字体；emoji 字符走文字通道丢色 | 替换 emoji 字符为 Twemoji SVG `<img src="https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/{cp}.svg">` + `.emoji-img { width: 1em; height: 1em; vertical-align: -0.125em; }`。skill 走 `<img>` 截图通道嵌入 |
+| CSS `background-clip: text` + `linear-gradient` 文字渐变 | OOXML 文字 fill 只有实色 / pattern，没文字渐变裁切 | 替换为 inline `<svg>` + `<text fill="url(#grad)">` + `<linearGradient>`。skill 走 SVG 截图通道。`viewBox` 留余量（例 320 × 64），用 `text-anchor="middle"` + `x="50%"` 居中 |
+| `backdrop-filter` / `filter` / `mix-blend-mode` / `skew` / 非均匀 scale | OOXML 无对应原语 | skill 已让这类容器走 `deco_snapshot` 像素截图，视觉保留（HTML 不用改）。文字仍走矢量画在截图之上，所以文字 crisp 可编辑——代价：filter/blend/skew 不会作用到文字本身。最终扁平观感不能接受时 HTML 改成实色背景 |
+| 多层硬 `text-shadow`（堆叠零模糊阴影） | OOXML 只支持单 `outerShdw`，不支持堆叠硬阴影 | HTML 减成单层轻阴影，或接受简化。单层软阴影仍能转好 |
+| 紧 `line-height`（例 `.85`） | PPT 文字排版稳定地比浏览器松，小行高差异最显眼 | 单行标题通常没事。多行标题接受稍松，或在 HTML 把标题拆成每个 `<p>` 单行 |
+| CJK 斜体（`font-style: italic` 作用到中文字符） | CJK 字体通常没真斜体；PPT 渲染成正体或假斜 | 只有 Latin 需要斜体的话，只把那些 run 标 `italic` |
+| 一条 text leaf 里 inline flex / grid `gap` 跨 span | text leaf 当一条记录导出；PPT 收到普通空格，没 CSS gap | 把 span 拆成独立 block / inline-block 元素，每个独立成记录；或接受稍紧间距 |
+| 含内容的 `<video>` | 截首帧像素嵌入，无播放 / 无控制条 / 无音轨 | 接受静帧；想要"画面+控制条+音轨"必须换 `<img>` 或保留 HTML 链路 |
+| WebGL / 动画 `<canvas>` | 截一帧静态；动画和交互丢失 | 预渲想要的帧换 `<img>`，或接受静态截图 |
+| 大旋转全宽 ribbon | 极端旋转下几何路径和元素截图 AABB 都吃紧；微小视觉差异预期内 | 确认 ribbon 没意外遮住前景。接受微差，或把装饰重构成更小的 clipped 容器走 `deco_snapshot` |
+| `::before` / `::after` `content: url(...)` / `attr(...)` / `counter(...)` / `open-quote` 等非 string literal | walker 只收 string literal content；其余值无对应 OOXML 通路 | 把要显示的内容直接 inline 到 HTML，或用 `<img>` 替代 url() |
+| Google Fonts 没有的字体（商业 / 自托管 / 拼错） | `font_resolver` 抓不到，字体回退到 viewer 系统字体 | 检查 family 名拼写。改名或换成 GF 有的同类字体。convert 时 `[font-resolve]` warning 会提示 |
+
+## 渲染端边界（不是转换 bug）
+
+不是转换器 bug，渲染端预期行为：
+
+- **PowerPoint 嵌入字体信任提示** — PPTX 嵌入字体正常提示；源可信就在 PowerPoint 里信任文档
+- **iOS / 网页版 PowerPoint 忽略嵌入字体** — 这些环境不认嵌入字体。改转换器代码前先在桌面 PowerPoint 复核
+- **浏览器专属交互**（动效 / 滚动 / 触控） — PPT 只保留 slide 页，不保留浏览器交互。确认静态状态抓对了即可
+
+## 调试命令
+
+`<skill_dir>` 是 skill 安装路径（通常 `~/.claude/skills/html-to-pptx/`）。
+
+```bash
+python <skill_dir>/convert.py <input.html> --keep-screenshots
+python <skill_dir>/scripts/dump_records.py <measurements.json> <slide_idx>
+```
+
+`--keep-screenshots` 把 HTML 参考 PNG + `measurements.json` + `preflight.json` 留在输出 `.pptx` 旁。装了 PPT 渲染器（PowerPoint COM / LibreOffice）且没加 `--no-visual-audit` 时，Stage 5b audit 物料落在 `<out>_audit/`；否则 5b 跳过（见 SKILL.md "渲染器要求"）。
