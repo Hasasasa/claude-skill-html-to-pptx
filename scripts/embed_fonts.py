@@ -67,6 +67,25 @@ def family_alias_map() -> dict[str, str]:
     return m
 
 
+def weighted_family_map() -> dict[tuple[str, int, bool], str]:
+    """Map (CSS family/alias lower, source weight, italic) to an exact OOXML typeface.
+
+    Used for families where the resolver embeds separate typefaces per source
+    weight, e.g. CSS `Syne` 700 -> OOXML `Syne 700`, `Syne` 800 -> `Syne 800`.
+    """
+    m: dict[tuple[str, int, bool], str] = {}
+    for p in FONT_PLAN:
+        css_family = p.get("cssFamily")
+        source_weight = p.get("sourceWeight")
+        source_italic = bool(p.get("sourceItalic", False))
+        if not css_family or source_weight is None:
+            continue
+        names = [css_family, *p.get("aliases", [])]
+        for name in names:
+            m[(name.lower(), int(source_weight), source_italic)] = p["typeface"]
+    return m
+
+
 def cjk_for_style(latin_style: str | None) -> str:
     """根据 latin 字体的风格（serif/sans/mono）选配对的 CJK 字体。
     没有 mono CJK 时 mono 也回退到 sans。"""
@@ -91,7 +110,6 @@ def style_of_typeface(typeface: str) -> str | None:
     return None
 
 NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main"
-NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 NS_CT = "http://schemas.openxmlformats.org/package/2006/content-types"
 NS_RELS = "http://schemas.openxmlformats.org/package/2006/relationships"

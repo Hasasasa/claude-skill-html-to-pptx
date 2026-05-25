@@ -28,7 +28,7 @@ PX_TO_EMU = SLIDE_W_EMU / SLIDE_W_PX  # 6350
 PX_TO_PT = 0.5
 
 from embed_fonts import (
-    family_alias_map, cjk_typefaces, cjk_for_style, style_of_typeface,
+    family_alias_map, weighted_family_map, cjk_typefaces, cjk_for_style, style_of_typeface,
 )
 from text_utils import is_cjk_text
 
@@ -38,14 +38,16 @@ from text_utils import is_cjk_text
 # FONT_PLAN 是运行时填充的（font_resolver 按需解析），所以 convert.py 在 resolve
 # 之后必须调 refresh_font_plan_caches() 把这三个 module-level 缓存重新派生一次。
 FONT_FALLBACKS: dict[str, str] = {}
+WEIGHTED_FONT_FALLBACKS: dict[tuple[str, int, bool], str] = {}
 CJK_FONTS: set[str] = set()
 _CJK_ALIAS_SET: set[str] = set()
 
 
 def refresh_font_plan_caches():
     """font_resolver 改完 FONT_PLAN 之后调一次，让 first_font / cjk_font 看到新条目。"""
-    global FONT_FALLBACKS, CJK_FONTS, _CJK_ALIAS_SET
+    global FONT_FALLBACKS, WEIGHTED_FONT_FALLBACKS, CJK_FONTS, _CJK_ALIAS_SET
     FONT_FALLBACKS = family_alias_map()
+    WEIGHTED_FONT_FALLBACKS = weighted_family_map()
     CJK_FONTS = cjk_typefaces()
     _CJK_ALIAS_SET = {name.lower() for name, tf in FONT_FALLBACKS.items() if tf in CJK_FONTS}
 
@@ -125,6 +127,47 @@ def first_font(font_family: str) -> str:
             return FONT_FALLBACKS[it.lower()]
         return it  # 用户用了我们没装的字体，原名透传（运行时回退到系统）
     return items[0] if items else DEFAULT_LATIN_FALLBACK
+
+
+def _normalize_weight_value(weight) -> int:
+    try:
+        return int(float(weight))
+    except (TypeError, ValueError):
+        if str(weight).lower() in ("bold", "bolder"):
+            return 700
+        return 400
+
+
+def _is_italic_value(style) -> bool:
+    return str(style or "").lower() == "italic"
+
+
+def first_font_for_run(font_family: str, font_weight, font_style) -> tuple[str, bool]:
+    """Return (OOXML typeface, exact_weight_face).
+
+    When font_resolver embedded exact source weights, use the requested run
+    weight to select the matching typeface dynamically.
+    """
+    items = [x.strip().strip('"').strip("'") for x in font_family.split(",")]
+    weight = _normalize_weight_value(font_weight)
+    italic = _is_italic_value(font_style)
+
+    for it in items:
+        if not it or it.lower() in GENERIC_FONT_KEYWORDS:
+            continue
+        key = (it.lower(), weight, italic)
+        if key in WEIGHTED_FONT_FALLBACKS:
+            return WEIGHTED_FONT_FALLBACKS[key], True
+
+        candidates = [
+            (abs(w - weight), w > weight, w, typeface)
+            for (fam, w, it_italic), typeface in WEIGHTED_FONT_FALLBACKS.items()
+            if fam == it.lower() and it_italic == italic
+        ]
+        if candidates:
+            return min(candidates)[3], True
+
+    return first_font(font_family), False
 
 
 def cjk_font(font_family: str, latin_name: str) -> str:
@@ -278,17 +321,10 @@ def _apply_rotation(shape, rec):
 
 
 def add_background(slide, rgb):
-    """整页底色：插入一个全屏 rectangle。"""
-    shape = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, SLIDE_W_EMU, SLIDE_H_EMU)
-    shape.line.fill.background()
-    shape.fill.solid()
-    shape.fill.fore_color.rgb = make_rgb(rgb)
-    # 把它放到最底层
-    sp = shape._element
-    spTree = sp.getparent()
-    spTree.remove(sp)
-    spTree.insert(2, sp)  # 0,1 是 nvGrpSpPr / grpSpPr
-    return shape
+    """整页底色：使用 slide background，避免生成可选的满页矩形。"""
+    fill = slide.background.fill
+    fill.solid()
+    fill.fore_color.rgb = make_rgb(rgb)
 
 
 def add_shape_box(slide, rec):
@@ -320,6 +356,55 @@ def add_shape_box(slide, rec):
             "rect": MSO_SHAPE.RECTANGLE}[kind]
     is_round = (kind != "rect")
 
+    border_rgba = parse_rgba(deco.get("borderColor", "rgb(127,127,127)"))
+    bw_top = deco.get("borderTopWidth", 0) or 0
+    bw_bottom = deco.get("borderBottomWidth", 0) or 0
+    bw_left = deco.get("borderLeftWidth", 0) or 0
+    bw_right = deco.get("borderRightWidth", 0) or 0
+    widest = max(bw_top, bw_bottom, bw_left, bw_right)
+    collapsed_border_box = (
+        r["h"] <= (bw_top + bw_bottom + 0.5)
+        or r["w"] <= (bw_left + bw_right + 0.5)
+    )
+    equal_border_widths = (
+        abs(bw_top - bw_bottom) < 0.01
+        and abs(bw_top - bw_left) < 0.01
+        and abs(bw_top - bw_right) < 0.01
+    )
+
+    # Simple four-sided boxes should stay one editable PPT shape. Previously a
+    # filled rectangle plus four line objects created selectable "background"
+    # blocks inside every card.
+    if len(active_sides) == 4 and (not deco.get("hasBg") or (kind == "rect" and equal_border_widths)):
+        shape = slide.shapes.add_shape(prst, x, y, w, h)
+        if kind == "pill":
+            shape.adjustments[0] = 0.5
+
+        if deco.get("hasBg"):
+            r_, g_, b_, a_ = parse_rgba(deco["bg"])
+            shape.fill.solid()
+            shape.fill.fore_color.rgb = RGBColor(r_, g_, b_)
+            if a_ < 1.0:
+                _set_fill_alpha(shape, a_)
+        elif collapsed_border_box:
+            # CSS border is drawn inside the border box. If the box is thinner
+            # than its opposing borders, the visual result is a solid strip.
+            shape.fill.solid()
+            shape.fill.fore_color.rgb = make_rgb(border_rgba[:3])
+            if border_rgba[3] < 1.0:
+                _set_fill_alpha(shape, border_rgba[3])
+        else:
+            shape.fill.background()
+
+        if collapsed_border_box and not deco.get("hasBg"):
+            shape.line.fill.background()
+        else:
+            shape.line.color.rgb = make_rgb(border_rgba[:3])
+            shape.line.width = Emu(px_to_emu(widest or 1))
+            _set_line_alpha(shape, border_rgba[3])
+        _apply_rotation(shape, rec)
+        return shape
+
     # 如果有填充色：画形状（不带 border，border 单独画线）
     fill_shape = None
     if deco.get("hasBg"):
@@ -336,27 +421,11 @@ def add_shape_box(slide, rec):
         _apply_rotation(shape, rec)
         fill_shape = shape
 
-    # 4 边都有边框 → 用形状带 border 一次画完
-    if len(active_sides) == 4 and not deco.get("hasBg"):
-        shape = slide.shapes.add_shape(prst, x, y, w, h)
-        if kind == "pill":
-            shape.adjustments[0] = 0.5
-        shape.fill.background()
-        b_rgba = parse_rgba(deco.get("borderColor", "rgb(127,127,127)"))
-        shape.line.color.rgb = make_rgb(b_rgba[:3])
-        widest = max(deco.get("borderTopWidth", 0), deco.get("borderBottomWidth", 0),
-                     deco.get("borderLeftWidth", 0), deco.get("borderRightWidth", 0))
-        shape.line.width = Emu(px_to_emu(widest))
-        _set_line_alpha(shape, b_rgba[3])
-        _apply_rotation(shape, rec)
-        return shape
-
     # oval / pill（仅有填充无 4 边边框）：完了直接 return，跳过下面"按需画线"
     if is_round and deco.get("hasBg"):
         return fill_shape
 
     # 否则按需画线（border-top / border-bottom 等单侧情形）
-    border_rgba = parse_rgba(deco.get("borderColor", "rgb(127,127,127)"))
     rgb = border_rgba[:3]
     alpha = border_rgba[3]
     for side in active_sides:
@@ -726,16 +795,25 @@ def _emit_run(paragraph, text, run, text_transform):
         text = text.lower()
 
     # 解析参数
-    font_name = first_font(run.get("fontFamily", DEFAULT_LATIN_FALLBACK))
+    weight = run.get("fontWeight", "400")
+    italic = run.get("fontStyle", "normal") == "italic"
+    font_name, exact_weight_face = first_font_for_run(
+        run.get("fontFamily", DEFAULT_LATIN_FALLBACK),
+        weight,
+        run.get("fontStyle", "normal"),
+    )
     font_size_px = run.get("fontSize", 16)
     font_size_pt = round(font_size_px * PX_TO_PT, 2)
 
-    weight = run.get("fontWeight", "400")
     try:
         bold = int(weight) >= 600
     except ValueError:
         bold = weight in ("bold", "bolder")
-    italic = run.get("fontStyle", "normal") == "italic"
+    if exact_weight_face:
+        # The embedded typeface already carries the requested source weight and
+        # style. Setting b/i on top can make PowerPoint synthesize another face.
+        bold = False
+        italic = False
     color_rgb = parse_rgb(run.get("color", "rgb(0,0,0)"))
 
     # letter-spacing: 字符串如 "3.6px" / "normal"
@@ -751,7 +829,6 @@ def _emit_run(paragraph, text, run, text_transform):
     is_chinese = is_cjk_text(text)
 
     # 构造 <a:r><a:rPr ...><a:rFont/></a:rPr><a:t>...</a:t></a:r>
-    nsmap_a = "http://schemas.openxmlformats.org/drawingml/2006/main"
     r_el = etree.SubElement(paragraph._p, qn("a:r"))
     rPr = etree.SubElement(r_el, qn("a:rPr"))
     rPr.set("lang", "zh-CN" if is_chinese else "en-US")
@@ -795,11 +872,18 @@ def _emit_run(paragraph, text, run, text_transform):
     # font 分离：latin 用 css 第一项；ea 走 CJK 字体（Noto Serif/Sans SC）
     # PPT 会按字符自动用 latin 还是 ea，所以 IBM Plex Mono 文本里的 CJK 字符
     # 自动落到 Noto Sans SC 上，避免变 tofu。
-    ea_name = cjk_font(run.get("fontFamily", ""), font_name)
+    #
+    # 关键：**只在 run 文本含 CJK 字符时**才写 <a:ea>。
+    # PowerPoint 行为：ea 字体只对 CJK 字符生效，Latin 字符走 latin slot。
+    # WPS 行为：会把 ea 字体的 advance width 应用到整 run（包括 Latin 字符）→
+    # Noto Sans SC 是等宽 CJK（每字 ~1em），Latin 字母被撑到全角宽，文本横向溢出 +
+    # 字间距异常宽。纯 Latin run 不写 ea，WPS 走 latin 字体的真实 advance。
     latin_el = etree.SubElement(rPr, qn("a:latin"))
     latin_el.set("typeface", font_name)
-    ea_el = etree.SubElement(rPr, qn("a:ea"))
-    ea_el.set("typeface", ea_name)
+    if is_chinese:
+        ea_name = cjk_font(run.get("fontFamily", ""), font_name)
+        ea_el = etree.SubElement(rPr, qn("a:ea"))
+        ea_el.set("typeface", ea_name)
     cs_el = etree.SubElement(rPr, qn("a:cs"))
     cs_el.set("typeface", font_name)
 

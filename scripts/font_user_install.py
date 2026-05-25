@@ -163,7 +163,7 @@ def collect_ttfs_for_install(report: dict, font_cache_dir: Path) -> list[Path]:
     for entry in report.get("resolved", []):
         if entry.get("cjk"):
             continue
-        for slot, fname in (entry.get("slots") or {}).items():
+        for fname in (entry.get("slots") or {}).values():
             p = font_cache_dir / fname
             if p.exists() and p.name not in seen:
                 ttfs.append(p)

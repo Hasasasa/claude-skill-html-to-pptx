@@ -78,8 +78,8 @@ SCAN_JS = r"""
     if (s.backgroundImage && s.backgroundImage !== 'none') r.push('background-image');
     if (s.boxShadow && s.boxShadow !== 'none') r.push('box-shadow');
     if (s.outlineStyle && s.outlineStyle !== 'none' && parseFloat(s.outlineWidth) > 0) r.push('outline');
-    if (hasPseudoDecoration(el, '::before')) r.push('::before');
-    if (hasPseudoDecoration(el, '::after')) r.push('::after');
+    if (hasRasterPseudoDecoration(el, '::before')) r.push('::before');
+    if (hasRasterPseudoDecoration(el, '::after')) r.push('::after');
     if (isClippingContainerWithTransformedChildren(s, el)) r.push('clip-with-transformed-children');
     return r;
   };
@@ -468,7 +468,7 @@ def _print_summary(result: dict, elapsed: float):
                 if r["severity"] == "high":
                     print(f"             [HIGH] {r['code']} {r['name']}: {r['detail']}  @ {r['where']}")
     else:
-        print(f"[preflight] OK 无高风险页")
+        print("[preflight] OK 无高风险页")
 
 
 def main():

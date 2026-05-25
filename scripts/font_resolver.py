@@ -206,7 +206,7 @@ def _download_and_convert_to_ttf(url: str, dst: Path) -> int:
     raise RuntimeError(f"未知字体格式 magic={magic!r} url={url[:80]}")
 
 
-def _normalize_to_slot(path: Path, family: str, slot: str) -> None:
+def _normalize_to_slot(path: Path, family: str, slot: str, source_weight: int | None = None) -> None:
     """改写 TTF 的 name 表 / OS/2，让 PowerPoint 认为它就是 family + slot 标准变体。
 
     GF 服务给 Space Grotesk wght@500 返回的文件 nameID=1='Space Grotesk Medium'，
@@ -224,11 +224,12 @@ def _normalize_to_slot(path: Path, family: str, slot: str) -> None:
 
     f = TTFont(str(path))
     name_table = f["name"]
-    # 清掉旧的 1/2/4/6/16/17（避免 Windows 上"Space Grotesk Medium"残留触发其他匹配）
-    name_table.names = [r for r in name_table.names if r.nameID not in (1, 2, 4, 6, 16, 17)]
+    # 清掉旧的 1/2/3/4/6/16/17（避免 Windows 上"Space Grotesk Medium"残留触发其他匹配）
+    name_table.names = [r for r in name_table.names if r.nameID not in (1, 2, 3, 4, 6, 16, 17)]
     # 只写 Windows English 一组，PowerPoint 足够认
     name_table.setName(family, 1, 3, 1, 0x0409)
     name_table.setName(style, 2, 3, 1, 0x0409)
+    name_table.setName(f"html-to-pptx;{family};slot={slot};src={source_weight or target_weight}", 3, 3, 1, 0x0409)
     name_table.setName(full, 4, 3, 1, 0x0409)
     name_table.setName(psname, 6, 3, 1, 0x0409)
     # OS/2 weight 改成 slot 标准
@@ -247,7 +248,7 @@ def _normalize_to_slot(path: Path, family: str, slot: str) -> None:
     f.save(str(path))
 
 
-def _cached_font_matches(path: Path, family: str, weight: int) -> bool:
+def _cached_font_matches(path: Path, family: str, weight: int, source_weight: int | None = None) -> bool:
     """校验 cache 里的 TTF 是不是真符合 (family, weight)。
 
     PowerPoint/WPS 用 name 表的 nameID=1 + OS/2.usWeightClass 来匹配嵌入字体。
@@ -260,6 +261,7 @@ def _cached_font_matches(path: Path, family: str, weight: int) -> bool:
         f = TTFont(str(path))
         n1 = f["name"].getDebugName(1) or ""
         actual_weight = f["OS/2"].usWeightClass
+        marker = f["name"].getDebugName(3) or ""
     except Exception:
         return False  # 文件破损也当 miss，强制重下
     # nameID=1 必须等于 family（去空格不区分大小写）
@@ -268,29 +270,42 @@ def _cached_font_matches(path: Path, family: str, weight: int) -> bool:
     # weight 在 ±50 内算匹配（应对 Medium-vs-Regular 偏差等）
     if abs(actual_weight - weight) > 50:
         return False
+    if source_weight is not None and marker.startswith("html-to-pptx;"):
+        if f"src={source_weight}" not in marker:
+            return False
     return True
 
 
 # === 命名 / 分类 ===
 
 def _safe_filename(family: str, weight: int, italic: bool) -> str:
-    """Tektur 700 → 'Tektur-Bold.ttf'；Caveat 400 italic → 'Caveat-Italic.ttf'。"""
-    if italic:
-        style_part = "BoldItalic" if weight >= 700 else "Italic"
-    else:
-        style_part = "Bold" if weight >= 700 else "Regular"
-    family_clean = family.replace(" ", "")
-    return f"{family_clean}-{style_part}.ttf"
+    """Tektur 700 → 'Tektur-w700.ttf'；Caveat 400 italic → 'Caveat-w400Italic.ttf'。
+
+    The source weight is part of the cache filename because each requested CSS
+    weight is embedded as its own OOXML typeface, e.g. Syne 700 and Syne 800.
+    This prevents a later download for one weight from masquerading as another
+    after name-table normalization.
+    """
+    family_clean = re.sub(r"[^A-Za-z0-9]+", "", family) or "Font"
+    style_part = "Italic" if italic else ""
+    return f"{family_clean}-w{int(weight)}{style_part}.ttf"
 
 
 def _slot_for(weight: int, italic: bool) -> str:
-    if italic and weight >= 700:
+    if italic and weight >= 600:
         return "boldItalic"
     if italic:
         return "italic"
-    if weight >= 700:
+    if weight >= 600:
         return "bold"
     return "regular"
+
+
+def _exact_typeface_name(family: str, weight: int, italic: bool) -> str:
+    suffix = f"{int(weight)}"
+    if italic:
+        suffix += " Italic"
+    return f"{family} {suffix}"
 
 
 def _classify_style(family: str) -> tuple[str, bool]:
@@ -349,27 +364,24 @@ def resolve_fonts(needed: dict[str, set[tuple[int, bool]]],
             continue
 
         # 之前已解析过且 cache 文件齐全且 name/weight 校验通过 → 直接组装 entry
-        family_clean = family.replace(" ", "")
         if record == "ok":
-            slot_weight = {"regular": 400, "italic": 400, "bold": 700, "boldItalic": 700}
-            slots = {}
+            exact_entries = []
             all_valid = True
-            # 按 needed 的 variants 反推：每个请求的 (w, it) 必须有对应文件且通过校验
-            for w, it in variants:
-                slot = _slot_for(w, it)
+            style, cjk = _classify_style(family)
+            for w, it in sorted(variants):
+                typeface = _exact_typeface_name(family, w, it)
                 fname = _safe_filename(family, w, it)
                 p = CACHE_DIR / fname
                 if not p.exists():
                     all_valid = False
                     break
-                if not _cached_font_matches(p, family, slot_weight[slot]):
+                if not _cached_font_matches(p, typeface, 400, source_weight=w):
                     print(f"  [font-resolve] cache 校验失败 {p.name} → fall through 重新解析")
                     all_valid = False
                     break
-                slots[slot] = p.name
-            if slots and all_valid:
-                style, cjk = _classify_style(family)
-                resolved_entries.append(_make_entry(family, style, cjk, slots))
+                exact_entries.append(_make_exact_entry(family, w, it, style, cjk, p.name))
+            if exact_entries and all_valid:
+                resolved_entries.extend(exact_entries)
                 cached_used.append(family)
                 continue
 
@@ -385,51 +397,32 @@ def resolve_fonts(needed: dict[str, set[tuple[int, bool]]],
             unavailable.append(family)
             continue
 
-        # PowerPoint embeddedFont 只有 4 个槽位：regular/italic/bold/boldItalic
-        # 从所有 faces 里全局分配：closest-to-400 → regular，剩下 closest-to-700 → bold
-        # 这样 Space Grotesk 500+600 能正确拆成 regular=500, bold=600（而不是互相覆盖）
-        slot_target = {"regular": 400, "italic": 400, "bold": 700, "boldItalic": 700}
-        non_italic = [f for f in faces if not f["italic"]]
-        italic = [f for f in faces if f["italic"]]
-        slot_pick: dict[str, dict] = {}
-        if non_italic:
-            slot_pick["regular"] = min(non_italic, key=lambda f: abs(f["weight"] - 400))
-            remaining = [f for f in non_italic if f is not slot_pick["regular"]]
-            if remaining:
-                slot_pick["bold"] = min(remaining, key=lambda f: abs(f["weight"] - 700))
-        if italic:
-            slot_pick["italic"] = min(italic, key=lambda f: abs(f["weight"] - 400))
-            remaining = [f for f in italic if f is not slot_pick["italic"]]
-            if remaining:
-                slot_pick["boldItalic"] = min(remaining, key=lambda f: abs(f["weight"] - 700))
-
-        slots = {}
-        for slot, face in slot_pick.items():
+        exact_entries = []
+        style, cjk = _classify_style(family)
+        for face in faces:
             w, it, url = face["weight"], face["italic"], face["url"]
-            # 文件名固定按 slot（Regular/Bold/Italic/BoldItalic），name 表会被改写
-            fname = _safe_filename(family, slot_target[slot], it)
+            typeface = _exact_typeface_name(family, w, it)
+            fname = _safe_filename(family, w, it)
             dst = CACHE_DIR / fname
-            need_download = (not dst.exists()) or (not _cached_font_matches(dst, family, slot_target[slot]))
+            need_download = (not dst.exists()) or (
+                not _cached_font_matches(dst, typeface, 400, source_weight=w)
+            )
             if need_download:
                 try:
                     n = _download_and_convert_to_ttf(url, dst)
-                    _normalize_to_slot(dst, family, slot)
-                    actual_w = ""
-                    if w != slot_target[slot]:
-                        actual_w = f" (源={w}, 改写为 {slot_target[slot]})"
-                    print(f"  [font-resolve] {family} → {fname} ({n:,} B){actual_w}")
+                    _normalize_to_slot(dst, typeface, "regular", source_weight=w)
+                    print(f"  [font-resolve] {family} {w}{' italic' if it else ''} → {fname} ({n:,} B)")
                 except Exception as e:
-                    print(f"  [font-resolve] {family} {slot} 下载失败: {e}")
+                    print(f"  [font-resolve] {family} {w}{' italic' if it else ''} 下载失败: {e}")
                     continue
-            slots[slot] = fname
+            exact_entries.append(_make_exact_entry(family, w, it, style, cjk, fname))
 
-        if not slots:
+        if not exact_entries:
             idx[family.lower()] = "not-in-google-fonts"
             unavailable.append(family)
             continue
 
-        style, cjk = _classify_style(family)
-        resolved_entries.append(_make_entry(family, style, cjk, slots))
+        resolved_entries.extend(exact_entries)
         idx[family.lower()] = "ok"
 
     _save_index(idx)
@@ -451,6 +444,24 @@ def _make_entry(family: str, style: str, cjk: bool, slots: dict,
         "style": style,
         "slots": slots,
         "aliases": list(aliases or []),
+    }
+
+
+def _make_exact_entry(family: str, weight: int, italic: bool, style: str,
+                      cjk: bool, fname: str, aliases: list[str] | None = None) -> dict:
+    typeface = _exact_typeface_name(family, weight, italic)
+    pitch = {"serif": "18", "sans": "34", "mono": "50"}.get(style, "18")
+    return {
+        "typeface": typeface,
+        "charset": "-122" if cjk else "0",
+        "pitchFamily": pitch,
+        "cjk": cjk,
+        "style": style,
+        "slots": {"regular": fname},
+        "aliases": list(aliases or []),
+        "cssFamily": family,
+        "sourceWeight": int(weight),
+        "sourceItalic": bool(italic),
     }
 
 

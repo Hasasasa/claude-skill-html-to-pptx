@@ -41,12 +41,11 @@ def _try_powerpoint_com(pptx_path: Path, out_dir: Path, only_indices: set[int] |
     其它页保留 out_dir 里上轮的 slide_NN.png。
     """
     try:
-        import pythoncom  # noqa: F401
+        import pythoncom
         import win32com.client
     except ImportError:
         return 0, "pywin32 未安装"
     try:
-        import pythoncom
         pythoncom.CoInitialize()
         app = win32com.client.Dispatch("PowerPoint.Application")
         try:
@@ -488,7 +487,7 @@ def self_check(pptx_path: Path, html_screenshots_dir: Path,
                 print(f"           {marker}第 {p['idx']:02d} 页{extra}")
             print("           → 这些只是结构化提示。**最终视觉判断必须走 Stage 5b 视觉 audit**")
         else:
-            print(f"[self-check] OK 无结构化告警 — 视觉判断仍由 Stage 5b audit 完成")
+            print("[self-check] OK 无结构化告警 — 视觉判断仍由 Stage 5b audit 完成")
 
     return result
 

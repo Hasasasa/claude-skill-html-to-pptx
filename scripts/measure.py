@@ -263,11 +263,20 @@ EXTRACT_JS = r"""
     const borderRight = parseFloat(s.borderRightWidth) > 0;
     const hasBorder = borderTop || borderBottom || borderLeft || borderRight;
 
-    // 通用装饰捕获：任何元素只要有 background-image / box-shadow / 伪元素装饰
+    const complexDecoration = hasComplexDecoration(s, el);
+    const pseudoVectorShapes = complexDecoration ? { before: [], after: [] } : simplePseudoLineShapeRecords(el);
+    for (const rec of pseudoVectorShapes.before) records.push(rec);
+
+    // Vector-first rule:
+    // - plain background / border / simple pseudo-element lines stay as PPT shapes
+    // - rasterize only decorations OOXML cannot express reliably
+    //   (image/shadow/filter/blend/skew/complex pseudo shapes)
+    //
+    // 通用装饰捕获：任何元素只要有 background-image / box-shadow / 复杂伪元素装饰
     // → 整块截图嵌入作为底层；子节点（文字 / 子装饰）按原流程继续处理画在之上
     // 这套机制覆盖所有 PPT 几何原语无法表达的 CSS 装饰，无需为每种新增加 patch
-    if (hasComplexDecoration(s, el)) {
-      const r = el.getBoundingClientRect();
+    if (complexDecoration) {
+      const r = decorationCaptureRect(el);
       if (r.width > 0 && r.height > 0) {
         const decoIndex = records.filter(x => x.kind === 'deco_snapshot').length;
         const marker = `slide${slideIndex+1}-deco${decoIndex+1}`;
@@ -280,6 +289,12 @@ EXTRACT_JS = r"""
           naturalSize: { w: el.offsetWidth, h: el.offsetHeight },
           rotation: cumulativeRotation(el),
           marker,
+          screenshotClip: {
+            x: r.left,
+            y: r.top,
+            w: r.width,
+            h: r.height,
+          },
         });
         // overflow:hidden 裁切容器：容器 PNG 已经包含被裁后的子装饰，跳过子的单独处理
         // （旋转子的 AABB 远大于裁切框，单独画会变成超大色块覆盖周围）
@@ -301,6 +316,19 @@ EXTRACT_JS = r"""
       const r = el.getBoundingClientRect();
       const runs = extractRuns(el);
       const rotDeg = cumulativeRotation(el);
+      const decoForText = complexDecoration
+        ? { hasBg: false, bg: 'rgba(0, 0, 0, 0)', borderTop: false, borderBottom: false,
+            borderLeft: false, borderRight: false, borderColor: s.borderTopColor,
+            borderTopWidth: 0, borderBottomWidth: 0, borderLeftWidth: 0, borderRightWidth: 0,
+            borderRadius: s.borderTopLeftRadius }
+        : { hasBg, bg, borderTop, borderBottom, borderLeft, borderRight,
+            borderColor: s.borderTopColor,
+            borderTopWidth: parseFloat(s.borderTopWidth),
+            borderBottomWidth: parseFloat(s.borderBottomWidth),
+            borderLeftWidth: parseFloat(s.borderLeftWidth),
+            borderRightWidth: parseFloat(s.borderRightWidth),
+            borderRadius: s.borderTopLeftRadius };
+      for (const rec of pseudoVectorShapes.after) records.push(rec);
       records.push({
         id: nodeId++,
         kind: 'text',
@@ -335,21 +363,14 @@ EXTRACT_JS = r"""
           // 竖排：vertical-rl / vertical-lr / sideways-* → assemble 翻译成 bodyPr vert
           writingMode: s.writingMode,
         },
-        deco: { hasBg, bg, borderTop, borderBottom, borderLeft, borderRight,
-                borderColor: s.borderTopColor,
-                borderTopWidth: parseFloat(s.borderTopWidth),
-                borderBottomWidth: parseFloat(s.borderBottomWidth),
-                borderLeftWidth: parseFloat(s.borderLeftWidth),
-                borderRightWidth: parseFloat(s.borderRightWidth),
-                borderRadius: s.borderTopLeftRadius,  // 用 top-left 代表整体；'50%' 或 px 值
-              },
+        deco: decoForText,
         text: el.innerText,
       });
       return;
     }
 
     // 非 text leaf 但有装饰 → 单独导出形状（不带文本，文本由子节点输出）
-    if (hasBg || hasBorder) {
+    if (!complexDecoration && (hasBg || hasBorder)) {
       const r = el.getBoundingClientRect();
       const rotDeg = cumulativeRotation(el);
       records.push({
@@ -370,6 +391,7 @@ EXTRACT_JS = r"""
               },
       });
     }
+    for (const rec of pseudoVectorShapes.after) records.push(rec);
 
     // flex/grid + spacing 容器：每个直接子（element 或非空 text node）作为独立 flex item 单独 emit。
     // - 不能合并多 item 进同一 group：合并 = 再把容器拉开的间距吞回去
@@ -542,6 +564,112 @@ EXTRACT_JS = r"""
     h: r.height,
   });
 
+  const unionRect = (a, b) => {
+    if (!b || b.width <= 0 || b.height <= 0) return a;
+    const left = Math.min(a.left, b.left);
+    const top = Math.min(a.top, b.top);
+    const right = Math.max(a.left + a.width, b.left + b.width);
+    const bottom = Math.max(a.top + a.height, b.top + b.height);
+    return { left, top, width: right - left, height: bottom - top };
+  };
+
+  const pxOrNull = (v) => {
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const pseudoAbsRect = (el, pseudo, base) => {
+    if (!hasPseudoDecoration(el, pseudo)) return null;
+    const ps = getComputedStyle(el, pseudo);
+    if (ps.display === 'none' || ps.visibility === 'hidden') return null;
+    if (ps.position !== 'absolute' && ps.position !== 'fixed') return null;
+
+    const left = pxOrNull(ps.left);
+    const right = pxOrNull(ps.right);
+    const top = pxOrNull(ps.top);
+    const bottom = pxOrNull(ps.bottom);
+    let w = pxOrNull(ps.width) || 0;
+    let h = pxOrNull(ps.height) || 0;
+    if (ps.boxSizing !== 'border-box') {
+      w += (pxOrNull(ps.paddingLeft) || 0) + (pxOrNull(ps.paddingRight) || 0)
+           + (pxOrNull(ps.borderLeftWidth) || 0) + (pxOrNull(ps.borderRightWidth) || 0);
+      h += (pxOrNull(ps.paddingTop) || 0) + (pxOrNull(ps.paddingBottom) || 0)
+           + (pxOrNull(ps.borderTopWidth) || 0) + (pxOrNull(ps.borderBottomWidth) || 0);
+    }
+
+    let x1 = left !== null ? base.left + left
+             : (right !== null ? base.left + base.width - right - w : base.left);
+    let x2 = right !== null ? base.left + base.width - right : x1 + w;
+    let y1 = top !== null ? base.top + top
+             : (bottom !== null ? base.top + base.height - bottom - h : base.top);
+    let y2 = bottom !== null ? base.top + base.height - bottom : y1 + h;
+    const l = Math.min(x1, x2);
+    const t = Math.min(y1, y2);
+    return { left: l, top: t, width: Math.abs(x2 - x1), height: Math.abs(y2 - y1) };
+  };
+
+  const decorationCaptureRect = (el) => {
+    const baseDom = el.getBoundingClientRect();
+    const base = { left: baseDom.left, top: baseDom.top, width: baseDom.width, height: baseDom.height };
+    let r = base;
+    r = unionRect(r, pseudoAbsRect(el, '::before', base));
+    r = unionRect(r, pseudoAbsRect(el, '::after', base));
+    const s = getComputedStyle(el);
+    const outline = (s.outlineStyle && s.outlineStyle !== 'none') ? (pxOrNull(s.outlineWidth) || 0) : 0;
+    if (outline > 0) {
+      r = { left: r.left - outline, top: r.top - outline,
+            width: r.width + outline * 2, height: r.height + outline * 2 };
+    }
+    return r;
+  };
+
+  const pseudoLineShapeRecord = (el, pseudo) => {
+    if (!isSimplePseudoLineDecoration(el, pseudo)) return null;
+    const baseDom = el.getBoundingClientRect();
+    const base = { left: baseDom.left, top: baseDom.top, width: baseDom.width, height: baseDom.height };
+    const r = pseudoAbsRect(el, pseudo, base);
+    if (!r || r.width <= 0 || r.height <= 0) return null;
+    const ps = getComputedStyle(el, pseudo);
+    const z = parseInt(ps.zIndex, 10);
+    const deco = {
+      hasBg: false,
+      bg: ps.backgroundColor,
+      borderTop: parseFloat(ps.borderTopWidth) > 0,
+      borderBottom: parseFloat(ps.borderBottomWidth) > 0,
+      borderLeft: parseFloat(ps.borderLeftWidth) > 0,
+      borderRight: parseFloat(ps.borderRightWidth) > 0,
+      borderColor: ps.borderTopColor,
+      borderTopWidth: parseFloat(ps.borderTopWidth) || 0,
+      borderBottomWidth: parseFloat(ps.borderBottomWidth) || 0,
+      borderLeftWidth: parseFloat(ps.borderLeftWidth) || 0,
+      borderRightWidth: parseFloat(ps.borderRightWidth) || 0,
+      borderRadius: ps.borderTopLeftRadius,
+    };
+    return {
+      id: nodeId++,
+      kind: 'shape',
+      tag: el.tagName.toLowerCase() + pseudo,
+      className: el.className || '',
+      rect: rectRel(r),
+      naturalSize: { w: r.width, h: r.height },
+      rotation: cumulativeRotation(el),
+      deco,
+      paintBeforeHost: Number.isFinite(z) && z < 0,
+    };
+  };
+
+  const simplePseudoLineShapeRecords = (el) => {
+    const out = { before: [], after: [] };
+    for (const pseudo of ['::before', '::after']) {
+      const rec = pseudoLineShapeRecord(el, pseudo);
+      if (!rec) continue;
+      const target = rec.paintBeforeHost ? out.before : out.after;
+      delete rec.paintBeforeHost;
+      target.push(rec);
+    }
+    return out;
+  };
+
   walk(slide);
 
   // 找一个有"实际"背景色的祖先：slide 自己若 transparent，向上回退到 body
@@ -585,14 +713,47 @@ _DECO_HIDE_FOREGROUND_JS = r"""(marker) => {
         }
         return false;
     };
+    const isTransparentColor = (value) => {
+        return !value || value === 'transparent' || value === 'rgba(0, 0, 0, 0)';
+    };
+    const px = (value) => {
+        const n = parseFloat(value || '0');
+        return Number.isFinite(n) ? n : 0;
+    };
+    const hasVisibleBoxDecoration = (el) => {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || px(cs.opacity || '1') <= 0) return false;
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 0.5 || rect.height < 0.5) return false;
+        const borderVisible = (side) => {
+            return px(cs[`border${side}Width`]) > 0
+                && cs[`border${side}Style`] !== 'none'
+                && !isTransparentColor(cs[`border${side}Color`]);
+        };
+        const outlineVisible = px(cs.outlineWidth) > 0
+            && cs.outlineStyle !== 'none'
+            && !isTransparentColor(cs.outlineColor);
+        const shadowVisible = cs.boxShadow && cs.boxShadow !== 'none';
+        return !isTransparentColor(cs.backgroundColor)
+            || borderVisible('Top')
+            || borderVisible('Right')
+            || borderVisible('Bottom')
+            || borderVisible('Left')
+            || outlineVisible
+            || shadowVisible;
+    };
     const MEDIA = new Set(['SVG','IMG','CANVAS','VIDEO']);
+    const isSlideRootDeco = deco === slide;
     const hidden = [];
     for (const el of slide.querySelectorAll('*')) {
         if (el === deco) continue;
         if (isAncestor(el)) continue;
         const otherDeco = el.hasAttribute('data-pptx-deco-id');
         const media = MEDIA.has(el.tagName.toUpperCase());
-        if (otherDeco || media || hasDirectText(el)) {
+        const directText = hasDirectText(el);
+        const shapeLike = hasVisibleBoxDecoration(el);
+        const insideDeco = deco.contains(el);
+        if (otherDeco || media || directText || (shapeLike && (isSlideRootDeco || !insideDeco))) {
             hidden.push([el, el.style.visibility, el.style.getPropertyPriority('visibility')]);
             // inline !important 才能 beat adapters 注入的 [data-anim]{visibility:visible!important}
             el.style.setProperty('visibility', 'hidden', 'important');
@@ -677,7 +838,18 @@ def _shoot_marker_records(page, records, out_dir: Path):
         try:
             if pre_js is not None:
                 page.evaluate(pre_js, marker)
-            page.locator(sel).screenshot(path=str(out_png), omit_background=omit_bg)
+            clip = rec.get("screenshotClip") if kind == "deco_snapshot" else None
+            if clip:
+                viewport = page.viewport_size or VIEWPORT
+                x = max(0, float(clip.get("x", 0)))
+                y = max(0, float(clip.get("y", 0)))
+                w = min(float(clip.get("w", 1)), max(1, viewport["width"] - x))
+                h = min(float(clip.get("h", 1)), max(1, viewport["height"] - y))
+                page.screenshot(path=str(out_png),
+                                clip={"x": x, "y": y, "width": max(1, w), "height": max(1, h)},
+                                omit_background=omit_bg)
+            else:
+                page.locator(sel).screenshot(path=str(out_png), omit_background=omit_bg)
             rec["screenshot"] = str(out_png)
             if post_js is not None:
                 page.evaluate(post_js)

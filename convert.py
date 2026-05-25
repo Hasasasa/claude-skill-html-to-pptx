@@ -192,7 +192,7 @@ def convert(html_path: Path, out_path: Path, keep_screenshots: bool, embed_fonts
             print(f"[embed]    {time.perf_counter()-t0:.2f}s")
         else:
             shutil.copy(intermediate_pptx, out_path)
-            print(f"[embed]    跳过")
+            print("[embed]    跳过")
 
         # 4) 自检（默认开启）— 自检异常不影响 pptx 产出
         self_check_result = None
@@ -362,7 +362,7 @@ def main():
             print(f"[work-copy] 已创建工作副本：{audited.name}")
         else:
             print(f"[work-copy] 复用已有工作副本：{audited.name}")
-        print(f"[work-copy] audit 修复改这个文件；下一轮 convert input 用此路径")
+        print("[work-copy] audit 修复改这个文件；下一轮 convert input 用此路径")
         in_path = audited
 
     if args.out:

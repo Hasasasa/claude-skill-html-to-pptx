@@ -99,7 +99,3 @@
    - 视觉装饰类（gradient、blend、filter）→ 加进 `hasComplexDecoration` 触发集即可，不写新代码
    - 文字属性类（writing-mode、列布局）→ 在 `measure.py` style 字典里加字段，在 `assemble.py:add_text_box` 里翻译
    - 几何变换类（skew / 3D）→ 走 deco_snapshot 截图兜底，几乎不用专门修
-
-## 测试样本来源
-
-`beautiful-html-templates/templates/` 下的模板集覆盖了主要 CSS 用法谱系——从极简编辑型到装饰玩味型到带 Chart.js canvas，建议作为回归基线。

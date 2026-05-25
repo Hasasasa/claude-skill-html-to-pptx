@@ -11,6 +11,7 @@
 # - isNonTranslateTransform(transformStr) → bool
 # - isClippingContainerWithTransformedChildren(s, el) → bool
 # - hasPseudoDecoration(el, pseudo) → bool（::before/::after 是否真的画了装饰）
+# - isSimplePseudoLineDecoration(el, pseudo) → bool（可用 PPT shape 表达的伪元素线框）
 # - hasComplexDecoration(s, el) → bool（命中即 measure 走 deco_snapshot 路径）
 DECO_HELPERS = r"""
   // CSS transform 非平移（含 rotate / skew / scale）。matrix(a,b,c,d,tx,ty)：
@@ -42,7 +43,10 @@ DECO_HELPERS = r"""
     return false;
   };
 
-  // 伪元素装饰：non-empty content 或 空 content+background-image。
+  // 伪元素装饰：non-empty content（string/url/counter 等）或
+  // 空 content + 任何可见装饰（背景图 / 实色背景 / 边框）。
+  // 漏检 background-color / border：doodle-frame::after 这种实色填充 + asym border-radius
+  // 会整个丢失（host 走普通 shape 档不带 ::after 渲染）。
   // 单独抽出来给 preflight 复用（preflight 不需要走截图，只需要知道有装饰）。
   const hasPseudoDecoration = (el, pseudo) => {
     const ps = getComputedStyle(el, pseudo);
@@ -52,9 +56,46 @@ DECO_HELPERS = r"""
     if (hasContent) return true;
     if (content === '""' || content === "''") {
       if (ps.backgroundImage && ps.backgroundImage !== 'none') return true;
+      const bg = ps.backgroundColor;
+      if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') return true;
+      if (parseFloat(ps.borderTopWidth) > 0 || parseFloat(ps.borderBottomWidth) > 0 ||
+          parseFloat(ps.borderLeftWidth) > 0 || parseFloat(ps.borderRightWidth) > 0) return true;
     }
     return false;
   };
+
+  const isZeroCssLength = (value) => {
+    if (!value) return true;
+    const n = parseFloat(value);
+    return Number.isFinite(n) && Math.abs(n) < 0.001;
+  };
+
+  // 可矢量化的伪元素线框：空 content + 透明背景 + 简单 border。
+  // 这类应转成 PPT shape，保持可编辑；不要走 deco_snapshot。
+  // 只覆盖保守子集：无 transform / filter / shadow / radius / background-image。
+  const isSimplePseudoLineDecoration = (el, pseudo) => {
+    const ps = getComputedStyle(el, pseudo);
+    const content = ps.content;
+    const emptyContent = content === '""' || content === "''";
+    if (!emptyContent) return false;
+    if (ps.display === 'none' || ps.visibility === 'hidden') return false;
+    if (ps.backgroundImage && ps.backgroundImage !== 'none') return false;
+    const bg = ps.backgroundColor;
+    if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') return false;
+    if (ps.boxShadow && ps.boxShadow !== 'none') return false;
+    if (ps.filter && ps.filter !== 'none') return false;
+    if (ps.mixBlendMode && ps.mixBlendMode !== 'normal') return false;
+    if (ps.transform && ps.transform !== 'none') return false;
+    if (!isZeroCssLength(ps.borderTopLeftRadius) ||
+        !isZeroCssLength(ps.borderTopRightRadius) ||
+        !isZeroCssLength(ps.borderBottomRightRadius) ||
+        !isZeroCssLength(ps.borderBottomLeftRadius)) return false;
+    return parseFloat(ps.borderTopWidth) > 0 || parseFloat(ps.borderBottomWidth) > 0 ||
+           parseFloat(ps.borderLeftWidth) > 0 || parseFloat(ps.borderRightWidth) > 0;
+  };
+
+  const hasRasterPseudoDecoration = (el, pseudo) =>
+    hasPseudoDecoration(el, pseudo) && !isSimplePseudoLineDecoration(el, pseudo);
 
   // CSS transform 矩阵是否"非纯旋转+平移"（含 skew / 非均匀 scale）。
   // 纯 rotate+translate 的 2D matrix 满足正交：a²+b² ≈ 1 且 c²+d² ≈ 1 且 a*c+b*d ≈ 0。
@@ -85,8 +126,8 @@ DECO_HELPERS = r"""
     if (s.backgroundImage && s.backgroundImage !== 'none') return true;
     if (s.boxShadow && s.boxShadow !== 'none') return true;
     if (s.outlineStyle && s.outlineStyle !== 'none' && parseFloat(s.outlineWidth) > 0) return true;
-    if (hasPseudoDecoration(el, '::before')) return true;
-    if (hasPseudoDecoration(el, '::after')) return true;
+    if (hasRasterPseudoDecoration(el, '::before')) return true;
+    if (hasRasterPseudoDecoration(el, '::after')) return true;
     if (isClippingContainerWithTransformedChildren(s, el)) return true;
     // backdrop-filter（毛玻璃）— OOXML 无原语，走截图。截图天然包含被模糊的背景
     if (s.backdropFilter && s.backdropFilter !== 'none') return true;
