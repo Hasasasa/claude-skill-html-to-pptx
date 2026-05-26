@@ -86,15 +86,91 @@ def parse_rgb(s: str):
     return parse_rgba(s)[:3]
 
 
+def _clamp_byte(value: float) -> int:
+    return max(0, min(255, int(round(value))))
+
+
+def _parse_css_alpha(value: str | None) -> float:
+    if value is None or value == "":
+        return 1.0
+    v = str(value).strip()
+    try:
+        if v.endswith("%"):
+            return max(0.0, min(1.0, float(v[:-1]) / 100.0))
+        return max(0.0, min(1.0, float(v)))
+    except ValueError:
+        return 1.0
+
+
+def _parse_css_rgb_component(value: str, srgb_unit: bool = False) -> int:
+    v = str(value).strip()
+    if v.lower() == "none":
+        return 0
+    try:
+        if v.endswith("%"):
+            return _clamp_byte(float(v[:-1]) * 2.55)
+        n = float(v)
+    except ValueError:
+        return 0
+    if srgb_unit:
+        return _clamp_byte(n * 255.0)
+    return _clamp_byte(n)
+
+
 def parse_rgba(s: str):
     """返回 (r,g,b,a) 其中 a 是 0.0–1.0 浮点；缺省 1.0。"""
-    m = re.match(r"rgba?\(([^)]+)\)", s)
-    if not m:
+    if not s:
         return (0, 0, 0, 1.0)
-    parts = [p.strip() for p in m.group(1).split(",")]
-    r = int(float(parts[0])); g = int(float(parts[1])); b = int(float(parts[2]))
-    a = float(parts[3]) if len(parts) >= 4 else 1.0
-    return (r, g, b, a)
+    value = str(s).strip()
+    if value in ("transparent", "rgba(0, 0, 0, 0)"):
+        return (0, 0, 0, 0.0)
+    if value.startswith("#"):
+        hex_v = value[1:]
+        if len(hex_v) in (3, 4):
+            hex_v = "".join(ch * 2 for ch in hex_v)
+        if len(hex_v) in (6, 8):
+            try:
+                r = int(hex_v[0:2], 16)
+                g = int(hex_v[2:4], 16)
+                b = int(hex_v[4:6], 16)
+                a = int(hex_v[6:8], 16) / 255.0 if len(hex_v) == 8 else 1.0
+                return (r, g, b, a)
+            except ValueError:
+                return (0, 0, 0, 1.0)
+
+    m = re.match(r"rgba?\(([^)]+)\)", value)
+    if m:
+        body = m.group(1).strip()
+        if "," in body:
+            parts = [p.strip() for p in body.split(",")]
+            rgb_parts = parts[:3]
+            alpha_part = parts[3] if len(parts) >= 4 else None
+        else:
+            left, sep, right = body.partition("/")
+            rgb_parts = [p for p in left.split() if p]
+            alpha_part = right.strip() if sep else None
+        if len(rgb_parts) >= 3:
+            return (
+                _parse_css_rgb_component(rgb_parts[0]),
+                _parse_css_rgb_component(rgb_parts[1]),
+                _parse_css_rgb_component(rgb_parts[2]),
+                _parse_css_alpha(alpha_part),
+            )
+
+    m = re.match(r"color\(\s*srgb\s+([^)]+)\)", value)
+    if m:
+        body = m.group(1).strip()
+        left, sep, right = body.partition("/")
+        parts = [p for p in left.split() if p]
+        if len(parts) >= 3:
+            return (
+                _parse_css_rgb_component(parts[0], srgb_unit=True),
+                _parse_css_rgb_component(parts[1], srgb_unit=True),
+                _parse_css_rgb_component(parts[2], srgb_unit=True),
+                _parse_css_alpha(right.strip() if sep else None),
+            )
+
+    return (0, 0, 0, 1.0)
 
 
 GENERIC_FONT_KEYWORDS = {
@@ -356,7 +432,18 @@ def add_shape_box(slide, rec):
             "rect": MSO_SHAPE.RECTANGLE}[kind]
     is_round = (kind != "rect")
 
-    border_rgba = parse_rgba(deco.get("borderColor", "rgb(127,127,127)"))
+    side_color_keys = {
+        "top": "borderTopColor",
+        "bottom": "borderBottomColor",
+        "left": "borderLeftColor",
+        "right": "borderRightColor",
+    }
+
+    def border_rgba_for(side):
+        return parse_rgba(deco.get(side_color_keys[side]) or deco.get("borderColor", "rgb(127,127,127)"))
+
+    border_rgba = border_rgba_for("top")
+    same_border_colors = all(border_rgba_for(side) == border_rgba for side in active_sides)
     bw_top = deco.get("borderTopWidth", 0) or 0
     bw_bottom = deco.get("borderBottomWidth", 0) or 0
     bw_left = deco.get("borderLeftWidth", 0) or 0
@@ -375,7 +462,7 @@ def add_shape_box(slide, rec):
     # Simple four-sided boxes should stay one editable PPT shape. Previously a
     # filled rectangle plus four line objects created selectable "background"
     # blocks inside every card.
-    if len(active_sides) == 4 and (not deco.get("hasBg") or (kind == "rect" and equal_border_widths)):
+    if same_border_colors and len(active_sides) == 4 and (not deco.get("hasBg") or (kind == "rect" and equal_border_widths)):
         shape = slide.shapes.add_shape(prst, x, y, w, h)
         if kind == "pill":
             shape.adjustments[0] = 0.5
@@ -426,9 +513,10 @@ def add_shape_box(slide, rec):
         return fill_shape
 
     # 否则按需画线（border-top / border-bottom 等单侧情形）
-    rgb = border_rgba[:3]
-    alpha = border_rgba[3]
     for side in active_sides:
+        side_rgba = border_rgba_for(side)
+        rgb = side_rgba[:3]
+        alpha = side_rgba[3]
         bw = sides[side][1] or 1
         if side == "top":
             _add_line(slide, x, y, x + w, y, rgb, bw, alpha)

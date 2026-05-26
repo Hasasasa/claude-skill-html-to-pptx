@@ -102,6 +102,20 @@ EXTRACT_JS = r"""
            s.display === 'inline-block' || s.display === 'inline-flex' ||
            hasBg || hasBorder;
   };
+
+  const decoFromStyle = (s, hasBg, bg, borderTop, borderBottom, borderLeft, borderRight) => ({
+    hasBg, bg, borderTop, borderBottom, borderLeft, borderRight,
+    borderColor: s.borderTopColor,
+    borderTopColor: s.borderTopColor,
+    borderBottomColor: s.borderBottomColor,
+    borderLeftColor: s.borderLeftColor,
+    borderRightColor: s.borderRightColor,
+    borderTopWidth: parseFloat(s.borderTopWidth) || 0,
+    borderBottomWidth: parseFloat(s.borderBottomWidth) || 0,
+    borderLeftWidth: parseFloat(s.borderLeftWidth) || 0,
+    borderRightWidth: parseFloat(s.borderRightWidth) || 0,
+    borderRadius: s.borderTopLeftRadius,
+  });
   // svg / img 等元素即便不是 HTML 块级，也要阻断 text-leaf 判定，
   // 否则容器里同时存在 <svg> 与 <span> 文本时,会被错误地当作纯文本叶子整体吞掉。
   // flex/grid 容器 + spacing 类 justify-content + 2+ 子 = "布局拉开"模式：
@@ -151,9 +165,62 @@ EXTRACT_JS = r"""
     };
   };
 
+  const isTextOnlyPseudoMarker = (el, pseudo) => {
+    if (!extractPseudoRun(el, pseudo)) return false;
+    const ps = getComputedStyle(el, pseudo);
+    if (ps.display === 'none' || ps.visibility === 'hidden') return false;
+    if (parseFloat(ps.opacity || '1') < 0.999) return false;
+    if (ps.position === 'absolute' || ps.position === 'fixed') return false;
+    if (ps.backgroundImage && ps.backgroundImage !== 'none') return false;
+    const bg = ps.backgroundColor;
+    if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') return false;
+    if (parseFloat(ps.borderTopWidth) > 0 || parseFloat(ps.borderBottomWidth) > 0 ||
+        parseFloat(ps.borderLeftWidth) > 0 || parseFloat(ps.borderRightWidth) > 0) return false;
+    if (ps.outlineStyle && ps.outlineStyle !== 'none' && parseFloat(ps.outlineWidth) > 0) return false;
+    if (ps.boxShadow && ps.boxShadow !== 'none') return false;
+    if (ps.filter && ps.filter !== 'none') return false;
+    if (ps.mixBlendMode && ps.mixBlendMode !== 'normal') return false;
+    if (ps.transform && ps.transform !== 'none') return false;
+    if (ps.textShadow && ps.textShadow !== 'none') return false;
+    return true;
+  };
+
+  const hasNonPseudoComplexDecoration = (s, el) => {
+    if (s.backgroundImage && s.backgroundImage !== 'none') return true;
+    if (s.boxShadow && s.boxShadow !== 'none') return true;
+    if (s.outlineStyle && s.outlineStyle !== 'none' && parseFloat(s.outlineWidth) > 0) return true;
+    if (isClippingContainerWithTransformedChildren(s, el)) return true;
+    if (s.backdropFilter && s.backdropFilter !== 'none') return true;
+    if (hasNontrivialFilter(s.filter)) return true;
+    if (s.mixBlendMode && s.mixBlendMode !== 'normal') return true;
+    if (isUnrepresentableTransform(s.transform)) return true;
+    return false;
+  };
+
+  const textStyleFromComputed = (s) => ({
+    color: s.color,
+    fontFamily: s.fontFamily,
+    fontSize: parseFloat(s.fontSize),
+    fontWeight: s.fontWeight,
+    fontStyle: s.fontStyle,
+    lineHeight: s.lineHeight,
+    letterSpacing: s.letterSpacing,
+    textAlign: s.textAlign,
+    textTransform: s.textTransform,
+    opacity: s.opacity,
+    paddingTop: parseFloat(s.paddingTop) || 0,
+    paddingRight: parseFloat(s.paddingRight) || 0,
+    paddingBottom: parseFloat(s.paddingBottom) || 0,
+    paddingLeft: parseFloat(s.paddingLeft) || 0,
+    display: s.display,
+    alignItems: s.alignItems,
+    justifyContent: s.justifyContent,
+    writingMode: s.writingMode,
+  });
+
   // 富文本 runs：把一个 text leaf 拆成多个 run，每个 run 携带自己的 computed style
   // 这样 <em> 等内嵌强调可以保留独立字体
-  const extractRuns = (el) => {
+  const extractRuns = (el, includePseudo = true) => {
     const runs = [];
     const walk = (n) => {
       if (n.nodeType === 3) {
@@ -178,15 +245,136 @@ EXTRACT_JS = r"""
           runs.push({ text: '\n', linebreak: true });
           return;
         }
-        const before = extractPseudoRun(n, '::before');
+        const before = includePseudo ? extractPseudoRun(n, '::before') : null;
         if (before) runs.push(before);
         for (const ch of n.childNodes) walk(ch);
-        const after = extractPseudoRun(n, '::after');
+        const after = includePseudo ? extractPseudoRun(n, '::after') : null;
         if (after) runs.push(after);
       }
     };
     walk(el);
-    return runs;
+    return applyNaturalLineBreaks(el, runs, !includePseudo);
+  };
+
+  const sameRunStyle = (a, b) => {
+    return a.fontFamily === b.fontFamily
+      && a.fontSize === b.fontSize
+      && a.fontWeight === b.fontWeight
+      && a.fontStyle === b.fontStyle
+      && a.color === b.color
+      && a.letterSpacing === b.letterSpacing
+      && a.textDecoration === b.textDecoration
+      && a.textShadow === b.textShadow;
+  };
+
+  const pushStyledText = (runs, text, style) => {
+    if (!text) return;
+    const last = runs[runs.length - 1];
+    if (last && !last.linebreak && sameRunStyle(last, style)) {
+      last.text += text;
+    } else {
+      runs.push({ ...style, text });
+    }
+  };
+
+  const applyNaturalLineBreaks = (el, originalRuns, ignorePseudo = false) => {
+    if (!originalRuns.length || originalRuns.some(r => r.linebreak)) return originalRuns;
+    // Pseudo text (common for list markers) is already folded into the parent
+    // BCR, but has no DOM Range. Keep those records on the old path.
+    if (!ignorePseudo && (extractPseudoRun(el, '::before') || extractPseudoRun(el, '::after'))) return originalRuns;
+
+    const tokens = [];
+    let splitTokenAcrossLines = false;
+    const range = document.createRange();
+    const collect = (n) => {
+      if (n.nodeType === 3) {
+        const raw = n.nodeValue || '';
+        const parent = n.parentElement;
+        if (!parent) return;
+        const s = getComputedStyle(parent);
+        const style = {
+          fontFamily: s.fontFamily,
+          fontSize: parseFloat(s.fontSize),
+          fontWeight: s.fontWeight,
+          fontStyle: s.fontStyle,
+          color: s.color,
+          letterSpacing: s.letterSpacing,
+          textDecoration: s.textDecorationLine,
+          textShadow: s.textShadow,
+        };
+        for (const m of raw.matchAll(/\S+/g)) {
+          range.setStart(n, m.index);
+          range.setEnd(n, m.index + m[0].length);
+          const rects = Array.from(range.getClientRects())
+            .filter(r => r.width > 0 && r.height > 0);
+          if (!rects.length) continue;
+          if (rects.length > 1) splitTokenAcrossLines = true;
+          const r = rects[0];
+          tokens.push({ text: m[0], top: r.top, left: r.left, style });
+        }
+      } else if (n.nodeType === 1) {
+        if (n.tagName === 'BR') return;
+        for (const ch of n.childNodes) collect(ch);
+      }
+    };
+    collect(el);
+    range.detach();
+    if (splitTokenAcrossLines || tokens.length < 2) return originalRuns;
+
+    const lines = [];
+    const tolerance = Math.max(2, parseFloat(getComputedStyle(el).fontSize || '16') * 0.35);
+    for (const tok of tokens) {
+      const last = lines[lines.length - 1];
+      if (!last || Math.abs(tok.top - last.top) > tolerance) {
+        lines.push({ top: tok.top, tokens: [tok] });
+      } else {
+        last.tokens.push(tok);
+      }
+    }
+    if (lines.length <= 1) return originalRuns;
+
+    const out = [];
+    lines.forEach((line, lineIdx) => {
+      line.tokens.sort((a, b) => a.left - b.left);
+      line.tokens.forEach((tok, tokIdx) => {
+        pushStyledText(out, (tokIdx ? ' ' : '') + tok.text, tok.style);
+      });
+      if (lineIdx !== lines.length - 1) out.push({ text: '\n', linebreak: true });
+    });
+    return out.length ? out : originalRuns;
+  };
+
+  const textContentDomRect = (el) => {
+    const nodes = [];
+    const collect = (n) => {
+      if (n.nodeType === 3 && n.nodeValue && /\S/.test(n.nodeValue)) {
+        nodes.push(n);
+      } else if (n.nodeType === 1) {
+        if (n.tagName === 'BR') return;
+        for (const ch of n.childNodes) collect(ch);
+      }
+    };
+    collect(el);
+    if (!nodes.length) return null;
+
+    const first = nodes[0];
+    const last = nodes[nodes.length - 1];
+    const firstIndex = first.nodeValue.search(/\S/);
+    const lastMatch = [...last.nodeValue.matchAll(/\S/g)].pop();
+    if (firstIndex < 0 || !lastMatch) return null;
+
+    const range = document.createRange();
+    range.setStart(first, firstIndex);
+    range.setEnd(last, lastMatch.index + lastMatch[0].length);
+    const rects = Array.from(range.getClientRects()).filter(r => r.width > 0 && r.height > 0);
+    range.detach();
+    if (!rects.length) return null;
+
+    const left = Math.min(...rects.map(r => r.left));
+    const top = Math.min(...rects.map(r => r.top));
+    const right = Math.max(...rects.map(r => r.right));
+    const bottom = Math.max(...rects.map(r => r.bottom));
+    return { left, top, right, bottom, width: right - left, height: bottom - top };
   };
 
   // 选择需要导出的节点
@@ -263,7 +451,11 @@ EXTRACT_JS = r"""
     const borderRight = parseFloat(s.borderRightWidth) > 0;
     const hasBorder = borderTop || borderBottom || borderLeft || borderRight;
 
-    const complexDecoration = hasComplexDecoration(s, el);
+    const textLeaf = isTextLeaf(el);
+    const pseudoNeedsSnapshot = (pseudo) =>
+      hasRasterPseudoDecoration(el, pseudo) && !(textLeaf && isTextOnlyPseudoMarker(el, pseudo));
+    const complexDecoration = hasNonPseudoComplexDecoration(s, el) ||
+      pseudoNeedsSnapshot('::before') || pseudoNeedsSnapshot('::after');
     const pseudoVectorShapes = complexDecoration ? { before: [], after: [] } : simplePseudoLineShapeRecords(el);
     for (const rec of pseudoVectorShapes.before) records.push(rec);
 
@@ -312,22 +504,61 @@ EXTRACT_JS = r"""
     }
 
     // text leaf：直接导出文本节点
-    if (isTextLeaf(el)) {
+    if (textLeaf) {
       const r = el.getBoundingClientRect();
       const runs = extractRuns(el);
       const rotDeg = cumulativeRotation(el);
       const decoForText = complexDecoration
         ? { hasBg: false, bg: 'rgba(0, 0, 0, 0)', borderTop: false, borderBottom: false,
             borderLeft: false, borderRight: false, borderColor: s.borderTopColor,
+            borderTopColor: s.borderTopColor, borderBottomColor: s.borderBottomColor,
+            borderLeftColor: s.borderLeftColor, borderRightColor: s.borderRightColor,
             borderTopWidth: 0, borderBottomWidth: 0, borderLeftWidth: 0, borderRightWidth: 0,
             borderRadius: s.borderTopLeftRadius }
-        : { hasBg, bg, borderTop, borderBottom, borderLeft, borderRight,
-            borderColor: s.borderTopColor,
-            borderTopWidth: parseFloat(s.borderTopWidth),
-            borderBottomWidth: parseFloat(s.borderBottomWidth),
-            borderLeftWidth: parseFloat(s.borderLeftWidth),
-            borderRightWidth: parseFloat(s.borderRightWidth),
-            borderRadius: s.borderTopLeftRadius };
+        : decoFromStyle(s, hasBg, bg, borderTop, borderBottom, borderLeft, borderRight);
+      const baseStyle = textStyleFromComputed(s);
+      const beforeMarker = isTextOnlyPseudoMarker(el, '::before') ? extractPseudoRun(el, '::before') : null;
+      const afterMarker = isTextOnlyPseudoMarker(el, '::after') ? extractPseudoRun(el, '::after') : null;
+      const contentRect = beforeMarker && !afterMarker ? textContentDomRect(el) : null;
+      if (contentRect) {
+        const bodyLeft = Math.min(Math.max(contentRect.left, r.left), r.right);
+        const markerRect = { left: r.left, top: r.top, width: Math.max(1, bodyLeft - r.left), height: r.height };
+        const bodyRect = { left: bodyLeft, top: r.top, width: Math.max(1, r.right - bodyLeft), height: r.height };
+        const ps = getComputedStyle(el, '::before');
+        for (const rec of pseudoVectorShapes.after) records.push(rec);
+        records.push({
+          id: nodeId++,
+          kind: 'text',
+          tag: el.tagName.toLowerCase() + '::before',
+          className: el.className || '',
+          rect: rectRel(markerRect),
+          naturalSize: { w: markerRect.width, h: markerRect.height },
+          rotation: rotDeg,
+          runs: [beforeMarker],
+          style: textStyleFromComputed(ps),
+          deco: { hasBg: false, bg: 'rgba(0, 0, 0, 0)', borderTop: false, borderBottom: false,
+                  borderLeft: false, borderRight: false, borderColor: ps.color,
+                  borderTopColor: ps.color, borderBottomColor: ps.color,
+                  borderLeftColor: ps.color, borderRightColor: ps.color,
+                  borderTopWidth: 0, borderBottomWidth: 0, borderLeftWidth: 0, borderRightWidth: 0,
+                  borderRadius: ps.borderTopLeftRadius },
+          text: beforeMarker.text,
+        });
+        records.push({
+          id: nodeId++,
+          kind: 'text',
+          tag: el.tagName.toLowerCase(),
+          className: el.className || '',
+          rect: rectRel(bodyRect),
+          naturalSize: { w: bodyRect.width, h: bodyRect.height },
+          rotation: rotDeg,
+          runs: extractRuns(el, false),
+          style: baseStyle,
+          deco: decoForText,
+          text: el.innerText,
+        });
+        return;
+      }
       for (const rec of pseudoVectorShapes.after) records.push(rec);
       records.push({
         id: nodeId++,
@@ -339,30 +570,7 @@ EXTRACT_JS = r"""
         naturalSize: { w: el.offsetWidth, h: el.offsetHeight },
         rotation: rotDeg,
         runs,
-        style: {
-          color: s.color,
-          fontFamily: s.fontFamily,
-          fontSize: parseFloat(s.fontSize),
-          fontWeight: s.fontWeight,
-          fontStyle: s.fontStyle,
-          lineHeight: s.lineHeight,
-          letterSpacing: s.letterSpacing,
-          textAlign: s.textAlign,
-          textTransform: s.textTransform,
-          opacity: s.opacity,
-          // CSS padding（textbox 内 margin 用，让 textbox 几何严格 = BCR 时不丢 padding）
-          paddingTop: parseFloat(s.paddingTop) || 0,
-          paddingRight: parseFloat(s.paddingRight) || 0,
-          paddingBottom: parseFloat(s.paddingBottom) || 0,
-          paddingLeft: parseFloat(s.paddingLeft) || 0,
-          // flex / grid 居中：HTML 用 align-items / justify-content 在容器内居中
-          // 文字时要翻译成 OOXML 的 anchor (垂直) + algn (水平)
-          display: s.display,
-          alignItems: s.alignItems,
-          justifyContent: s.justifyContent,
-          // 竖排：vertical-rl / vertical-lr / sideways-* → assemble 翻译成 bodyPr vert
-          writingMode: s.writingMode,
-        },
+        style: baseStyle,
         deco: decoForText,
         text: el.innerText,
       });
@@ -381,14 +589,7 @@ EXTRACT_JS = r"""
         // 元素未旋转的尺寸（不含 transform 效果），用于旋转还原
         naturalSize: { w: el.offsetWidth, h: el.offsetHeight },
         rotation: rotDeg,
-        deco: { hasBg, bg, borderTop, borderBottom, borderLeft, borderRight,
-                borderColor: s.borderTopColor,
-                borderTopWidth: parseFloat(s.borderTopWidth),
-                borderBottomWidth: parseFloat(s.borderBottomWidth),
-                borderLeftWidth: parseFloat(s.borderLeftWidth),
-                borderRightWidth: parseFloat(s.borderRightWidth),
-                borderRadius: s.borderTopLeftRadius,  // 用 top-left 代表整体；'50%' 或 px 值
-              },
+        deco: decoFromStyle(s, hasBg, bg, borderTop, borderBottom, borderLeft, borderRight),
       });
     }
     for (const rec of pseudoVectorShapes.after) records.push(rec);
@@ -507,13 +708,7 @@ EXTRACT_JS = r"""
         justifyContent: gs.justifyContent,
         writingMode: gs.writingMode,
       },
-      deco: { hasBg, bg, borderTop, borderBottom, borderLeft, borderRight,
-              borderColor: gs.borderTopColor,
-              borderTopWidth: parseFloat(gs.borderTopWidth),
-              borderBottomWidth: parseFloat(gs.borderBottomWidth),
-              borderLeftWidth: parseFloat(gs.borderLeftWidth),
-              borderRightWidth: parseFloat(gs.borderRightWidth),
-              borderRadius: gs.borderTopLeftRadius },
+      deco: decoFromStyle(gs, hasBg, bg, borderTop, borderBottom, borderLeft, borderRight),
       text: txt,
     });
   };
@@ -639,6 +834,10 @@ EXTRACT_JS = r"""
       borderLeft: parseFloat(ps.borderLeftWidth) > 0,
       borderRight: parseFloat(ps.borderRightWidth) > 0,
       borderColor: ps.borderTopColor,
+      borderTopColor: ps.borderTopColor,
+      borderBottomColor: ps.borderBottomColor,
+      borderLeftColor: ps.borderLeftColor,
+      borderRightColor: ps.borderRightColor,
       borderTopWidth: parseFloat(ps.borderTopWidth) || 0,
       borderBottomWidth: parseFloat(ps.borderBottomWidth) || 0,
       borderLeftWidth: parseFloat(ps.borderLeftWidth) || 0,
