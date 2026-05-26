@@ -16,7 +16,7 @@
 | `font-weight` 300-900 | `b="1"` 阈值 ≥600；细字按字体变体 |
 | `font-style: italic` | `i="1"` |
 | `color`（hex / rgb / rgba） | `<a:solidFill>` + alpha |
-| `line-height` | `<a:spcPct>` |
+| `line-height` | px → `<a:spcPts>`；百分比 / 倍数 → `<a:spcPct>` |
 | `letter-spacing` | `spc=` 百分点 |
 | `text-align: left/center/right` | `algn="l/ctr/r"` |
 | `text-transform: uppercase/lowercase` | run 文本预处理 |

@@ -670,6 +670,19 @@ def _fix_empty_paragraph_sizes(tf, style_font_size_px):
             endR.set("sz", str(end_sz))
 
 
+def _emit_line_break(paragraph, style_font_size_px):
+    """Insert an OOXML soft line break inside the current paragraph.
+
+    Browser-wrapped lines are still one CSS paragraph. Emitting a new PPT
+    paragraph adds paragraph-model spacing in PowerPoint/WPS and makes the
+    visual line height looser than HTML.
+    """
+    br = etree.SubElement(paragraph._p, qn("a:br"))
+    rPr = etree.SubElement(br, qn("a:rPr"))
+    fs_px = float(style_font_size_px or 16) or 16
+    rPr.set("sz", str(max(100, int(round(fs_px * PX_TO_PT * 100)))))
+
+
 def add_text_box(slide, rec):
     """文本节点 → pptx textbox（多 run 富文本）。"""
     r = rec["rect"]
@@ -792,10 +805,7 @@ def add_text_box(slide, rec):
     for item in deduped:
         kind = item[0]
         if kind == "BREAK":
-            cur_para = tf.add_paragraph()
-            new_pPr = cur_para._p.get_or_add_pPr()
-            new_pPr.set("algn", h_algn)
-            _apply_line_spacing(new_pPr, style_for_lh.get("lineHeight"), style_for_lh.get("fontSize", 16))
+            _emit_line_break(cur_para, style_for_lh.get("fontSize", 16))
             pending_space = False
         elif kind == "SPACE":
             pending_space = True
@@ -811,16 +821,15 @@ def add_text_box(slide, rec):
     return tb
 
 
-def _parse_line_height_pct(line_height: str | float | None, font_size_px: float) -> int | None:
-    """把 CSS line-height + font-size 解析成 OOXML spcPct 千分比（单位是 1/1000 %）。
+def _parse_line_spacing(line_height: str | float | None, font_size_px: float) -> tuple[str, int] | None:
+    """Parse CSS line-height into DrawingML line spacing.
 
-    OOXML <a:spcPct val="120000"/> = 120% 行距。
+    CSS px line-height is an exact baseline distance, so emit spcPts instead
+    of spcPct. PowerPoint/WPS interpret spcPct against the font's internal line
+    box, which is usually taller than CSS line-height and looks too loose.
 
-    输入示例：
-    - "184.32px" + fs=192 → 96% → 返回 96000
-    - "1.2"             → 120% → 返回 120000
-    - "120%"            → 120% → 返回 120000
-    - "normal"          → 返回 None（不显式写，但调用方可降级到 120000 兜底）
+    Returns ("pts", value) for <a:spcPts> where value is 1/100 pt, or
+    ("pct", value) for <a:spcPct> where value is 1/1000 percent.
     """
     if not line_height or not font_size_px or font_size_px <= 0:
         return None
@@ -830,41 +839,46 @@ def _parse_line_height_pct(line_height: str | float | None, font_size_px: float)
     # 百分号
     if s.endswith("%"):
         try:
-            return int(float(s[:-1]) * 1000)
+            return ("pct", int(float(s[:-1]) * 1000))
         except ValueError:
             return None
     # px 显式
     if s.endswith("px"):
         try:
             px = float(s[:-2])
-            return int((px / font_size_px) * 100000)
+            return ("pts", max(100, int(round(px * PX_TO_PT * 100))))
         except ValueError:
             return None
     # 无单位数字（CSS line-height 倍数）
     try:
-        return int(float(s) * 100000)
+        return ("pct", int(float(s) * 100000))
     except ValueError:
         return None
 
 
 def _apply_line_spacing(pPr, line_height, font_size_px, default_pct=120000):
-    """在 pPr 上写 <a:lnSpc><a:spcPct val="..."/></a:lnSpc>。
+    """在 pPr 上写 <a:lnSpc>。
 
     PPT 对 CJK 字体的默认行距比 CSS 大很多（典型 1.8-2.0x），不显式写就会出现
     大标题撑下来覆盖下方元素的"叠压"。这里把 CSS 的 line-height 显式传给 OOXML。
 
+    CSS px 行高写成 <a:spcPts> 固定点值；百分比 / 倍数行高写成 <a:spcPct>。
     line-height 是 "normal" 时用 default_pct（120%）兜底——比 PPT 默认紧但
     不会产生叠压。
     """
-    pct = _parse_line_height_pct(line_height, font_size_px)
-    if pct is None:
-        pct = default_pct
+    spacing = _parse_line_spacing(line_height, font_size_px)
+    if spacing is None:
+        spacing = ("pct", default_pct)
     # 清掉旧的 lnSpc（防重复运行）
     for old in pPr.findall(qn("a:lnSpc")):
         pPr.remove(old)
     lnSpc = etree.SubElement(pPr, qn("a:lnSpc"))
-    spcPct = etree.SubElement(lnSpc, qn("a:spcPct"))
-    spcPct.set("val", str(pct))
+    kind, val = spacing
+    if kind == "pts":
+        spc = etree.SubElement(lnSpc, qn("a:spcPts"))
+    else:
+        spc = etree.SubElement(lnSpc, qn("a:spcPct"))
+    spc.set("val", str(val))
     # OOXML 子元素顺序：lnSpc 必须放在 pPr 的开头（在 buNone / buChar 之前）
     # pPr 子元素顺序: lnSpc, spcBef, spcAft, ..., defRPr
     # 简单做法：把 lnSpc 移到最前

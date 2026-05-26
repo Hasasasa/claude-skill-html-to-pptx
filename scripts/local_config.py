@@ -1,6 +1,6 @@
 """local_config.py — skill 本机状态加载 + 首次 seed。
 
-- `.config.local.toml`（gitignored）：用户偏好（fonts.auto_install / cleanup.default）
+- `.config.local.toml`（gitignored）：用户偏好（fonts.auto_install / cleanup.default / audit.mode）
 - `references/lessons-learned.md`（gitignored）：本地沉淀工作副本；首次缺失从
   `lessons-learned.md.example`（committed 模板）seed
 
@@ -21,6 +21,7 @@ LESSONS_TEMPLATE = SKILL_ROOT / "references" / "lessons-learned.md.example"
 _DEFAULTS: dict = {
     "fonts": {"auto_install": "ask"},   # "yes" / "no" / "ask"
     "cleanup": {"default": "clean"},    # "clean" / "keep"
+    "audit": {"mode": "ask"},           # "triage" / "page" / "manual" / "ask"
 }
 
 
@@ -46,6 +47,23 @@ def fonts_auto_install() -> str:
 
 def cleanup_default() -> str:
     return str(load().get("cleanup", {}).get("default", "clean")).lower()
+
+
+def audit_mode() -> str:
+    mode = str(load().get("audit", {}).get("mode", "ask")).lower().replace("-", "_")
+    aliases = {
+        "contact": "triage",
+        "contact_sheet": "triage",
+        "contact_first": "triage",
+        "per_page": "page",
+        "page_by_page": "page",
+        "human": "manual",
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in {"triage", "page", "manual", "ask"}:
+        print(f"[config] audit.mode={mode!r} 无效，回退 ask")
+        return "ask"
+    return mode
 
 
 def seed_lessons_learned() -> None:

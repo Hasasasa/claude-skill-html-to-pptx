@@ -41,6 +41,7 @@
 - **极薄 border-only 条在 PPT 里变空心框**：CSS border 画在 border box 内部，若 `height <= border-top + border-bottom`，上下边框会贴合成实心条；PowerPoint shape line 画在轮廓中心，同样尺寸会露出中间空隙。四边框、无填充、内容区塌陷的盒子应改画为 border 色实心 shape
 - **WPS 里能选中一个满页同底色色块 / 干扰编辑**：满页背景色应通过 slide 背景填充实现，不要发普通根节点满页 shape — 它在 WPS 里会成为可选可拖对象
 - **线框卡片里能拖出同底色、无线条的独立色块**：不要把 `background + 四边等宽 border` 拆成"填充矩形 + 四条线"。这会产生一个视觉上像背景、但可选可拖的多余对象。简单矩形四边等宽边框应合并成一个 PPT shape（fill + line），后层偏移伪元素线框再单独用 shape
+- **负坐标装饰 shape（`position:absolute; left:-Nvw`）在 PPT 里跳到 slide 内**：HTML 里用负 `left` / `top` 让圆形 / 矩形装饰部分溢出 slide 边界（measurement rect.x 为负），shape 通道在 assemble 阶段位置取了绝对值或被截断，导致装饰被错误地移到 slide 内并叠压前景文字。OOXML `<a:off x>` 本身支持负值，这是 assemble 抽象不到位。HTML workaround：把装饰元素改成 inline SVG，外层 svg 元素位置全正、宽高只覆盖 slide 内可见区，内部 `<circle>` / `<path>` 用负 cx / 负坐标实现"溢出"——viewBox 自然 clip 掉超出部分，skill 走 SVG → 图片通道，绕开 shape 负坐标 bug
 
 ## Self-Check 记录
 
@@ -57,6 +58,8 @@
 
 | 模式 | 为什么破坏 PPT | HTML 改写 |
 |---|---|---|
+| 自定义元素 shadow DOM 在 `:host` 上声明了 `font-family`（slot 包裹整个 deck，body font 不再继承到 slide）| 浏览器渲染时所有 slot 内文字实际用 :host 的字体链而不是 body 的；measure 阶段记录的 fontFamily 就是 :host 的回退链（多半是 system aliases），resolver 永远不会去拉 body 声明的 GF 字体 → PPT 用 Office 默认 fallback（甚至打字机字形）| 在 `section.slide`（或其它真正承载内容的 selector）上**显式再声明一次** `font-family: "<GF 字体>", ...`，让 slide 的子元素从 slide 处继承到正确字体；不要依赖 body 字体穿透 shadow DOM |
+| 同行 inline flex / grid 容器只靠 `gap` 隔开多个 `<span>`（如 `<span class="meta"><span>X</span><span>Y</span></span>`，CSS 设 `display:flex; gap:64px`）| 跨 span 的视觉间距是 CSS gap，HTML 文本里两 span 之间没有任何字面字符；measure / OOXML 拿到的是相邻 text run，PPT 渲染时两段字符直接粘连 | 合并成单 span 并塞入字面分隔符（` · ` / `<span>&nbsp;·&nbsp;</span>` 等），让两段字符之间在 DOM 层就有 literal 字符 |
 
 ## OOXML 边界
 

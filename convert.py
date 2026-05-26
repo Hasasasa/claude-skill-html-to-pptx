@@ -233,7 +233,8 @@ def convert(html_path: Path, out_path: Path, keep_screenshots: bool, embed_fonts
                 print(f"[audit]    {pkg['pages']} 页对比物料 → {pkg['out_dir']}")
                 if pkg.get("incremental"):
                     print(f"[audit]    增量：本轮重建 {pkg['fresh']}，复用上轮 {pkg['cached']}")
-                print(f"[audit]    给上游 agent 看: 读 {pkg['prompt']} 然后逐页看 slide_NN_compare.png")
+                print(f"[audit]    mode={pkg.get('audit_mode', 'ask')} · contact sheets={len(pkg.get('contact_sheets', []))}")
+                print(f"[audit]    给上游 agent 看: 读 {pkg['prompt']} 后按 audit.mode 审查")
             except Exception as e:
                 print(f"[audit] 异常（忽略）: {e}")
             print(f"[audit]    耗时 {time.perf_counter()-t0:.2f}s")
