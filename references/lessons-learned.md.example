@@ -42,6 +42,9 @@
 - **WPS 里能选中一个满页同底色色块 / 干扰编辑**：满页背景色应通过 slide 背景填充实现，不要发普通根节点满页 shape — 它在 WPS 里会成为可选可拖对象
 - **线框卡片里能拖出同底色、无线条的独立色块**：不要把 `background + 四边等宽 border` 拆成"填充矩形 + 四条线"。这会产生一个视觉上像背景、但可选可拖的多余对象。简单矩形四边等宽边框应合并成一个 PPT shape（fill + line），后层偏移伪元素线框再单独用 shape
 - **负坐标装饰 shape（`position:absolute; left:-Nvw`）在 PPT 里跳到 slide 内**：HTML 里用负 `left` / `top` 让圆形 / 矩形装饰部分溢出 slide 边界（measurement rect.x 为负），shape 通道在 assemble 阶段位置取了绝对值或被截断，导致装饰被错误地移到 slide 内并叠压前景文字。OOXML `<a:off x>` 本身支持负值，这是 assemble 抽象不到位。HTML workaround：把装饰元素改成 inline SVG，外层 svg 元素位置全正、宽高只覆盖 slide 内可见区，内部 `<circle>` / `<path>` 用负 cx / 负坐标实现"溢出"——viewBox 自然 clip 掉超出部分，skill 走 SVG → 图片通道，绕开 shape 负坐标 bug
+- **`flex-direction:column` 堆叠的 inline 元素（多 `<span>` 各占一行）在 PPT 里全部叠在同一坐标**：line-height ≤ 1 时相邻行的视觉 rect 含 ascender/descender 会有少量重叠（如 144px 字号 line-height:1 → rect 173px 高 / 行距 144px → 重叠 29px）。measure 的 `sameLine` 若仅按"区间重叠 > tolerance"判同行，会把栈式相邻行错并到一行。**辨识**：measurement runs 缺 `linebreak: true` 但 HTML 里子元素明显在不同 y。**修复点**：`measure.py:applyNaturalLineBreaks` 的 `sameLine` 需加比例阈值——重叠占较小元素高度的 50% 以上才算同行
+- **容器小字号 + 子节点大字号（如 `.stat { font-size:14px } .stat .num { font-size:96px }`）在 PPT 里行距按容器算导致大字号叠压**：leaf 节点 `style.lineHeight` 取自容器 computed 值（已为 px），不反映 runs 内更大字号子节点的实际行距。**辨识**：measurement 记录里 `style.fontSize` << `runs[].fontSize`，PPT 输出多行文字垂直叠压。**修复点**：measure 给每个 run 加 `lineHeight` 字段；assemble 计算行距时取 `max(leaf_lh, runs 内 lh 极值)`
+- **`<br><br>` 分隔的两段长正文在 PPT 里串成一坨横铺**：assemble 旧启发"有显式 `<br>` → wrap=none 让作者完全决定分行"过宽，触发即关掉框内 word-wrap，长段落溢出整框。**辨识**：双列 / 多段布局里左右列文字在 PPT 里挤到同一行。**修复点**：`no_auto_wrap` 改为「真单行」或「紧排版（框高 ≈ (br_count + 1) × 有效行高）」才禁 wrap；松排版（框高远大于 BR 分段数所需）应保持 wrap=square 让 PPT 按宽切
 
 ## Self-Check 记录
 
