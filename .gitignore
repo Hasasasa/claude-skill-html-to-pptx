@@ -17,3 +17,6 @@ _scratch_*.py
 # OS
 .DS_Store
 Thumbs.db
+
+# 单页 audit 调试截图（每轮排查产物，不入库）
+assets/compare/_check/

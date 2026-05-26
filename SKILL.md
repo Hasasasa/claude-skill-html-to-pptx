@@ -1,6 +1,6 @@
 ---
 name: html-to-pptx
-description: 把 HTML 制作的演示文稿（slide deck）转换为 .pptx。保留多 run 富文本（中-英斜体）、矢量定位、字体子集嵌入（换机不掉字）、SVG 图形、半透明背景、圆形/椭圆装饰。通过启发式定位 slide + force-position 强制激活，不依赖具体框架 / 类名 / 库约定，对 transform 平移 / .active 类切换 / scroll-snap 等切页机制统一兜底。当用户提到"HTML 转 PPT"、"网页幻灯片转 pptx"、"想给同事一份 ppt 副本"、"汇报不方便放浏览器"时触发。
+description: 当用户想把 HTML 幻灯片转成 .pptx 时触发——"HTML 转 PPT"、"网页幻灯片转 pptx"、"把这个 deck 转成 ppt"、"给同事一份 ppt 副本"、"汇报不方便放浏览器"、给了 .html 路径 + 提到 ppt/pptx/演示/幻灯片。保留矢量文字可编辑、字体按需嵌入、复杂装饰自动走截图兜底；不依赖 reveal.js / 自写 deck 等具体框架。
 ---
 
 # html-to-pptx

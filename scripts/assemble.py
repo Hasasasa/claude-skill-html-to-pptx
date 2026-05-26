@@ -60,10 +60,25 @@ def parse_text_shadow(value: str):
     多层 shadow 取第一层。值如：
         "rgba(229, 57, 42, 1) 5px 5px 0px"
         "5px 5px rgb(0, 0, 0)"
+        "rgb(244, 208, 63) 4px 4px 0px, rgb(15, 27, 61) 8px 8px 0px"  ← rgb() 内有逗号
     """
     if not value or value == "none":
         return None
-    first = value.split(",", 1)[0]
+    # 按顶层逗号切分（跳过括号内逗号）：computed value 的颜色经常是 rgb(R, G, B)，
+    # 直接 split(",", 1) 会把 "rgb(244" 拆出来当第一层
+    first = ""
+    depth = 0
+    for ch in value:
+        if ch == "(":
+            depth += 1
+            first += ch
+        elif ch == ")":
+            depth -= 1
+            first += ch
+        elif ch == "," and depth == 0:
+            break
+        else:
+            first += ch
     # 把可能在前后的 rgb()/rgba() 抠出来
     rgba_m = re.search(r"rgba?\(([^)]+)\)", first)
     color_rgba = (0, 0, 0, 1.0)
@@ -722,11 +737,33 @@ def add_text_box(slide, rec):
     tf = tb.text_frame
     # 何时禁用自动 wrap：
     # (1) 真单行（h < max_fs*1.8）— 短标签 PPT 度量稍宽时不应换行
-    # (2) 有显式 <br> — 作者已用 <br> 决定分行，PPT 不该在每段里再自动切
-    # 自由流动的多行段落（无 <br>，纯靠 word-wrap）保持 wrap=square 让 PPT 按宽度切。
+    # (2) 紧排版多行（h ≈ (br_count+1) × line-height）— 每段恰好一行，
+    #     PPT 度量稍宽时不应再切，会破坏作者用 <br> 的排版意图（如 "Title<br>Subtitle"）
+    # 松排版（h 远大于 BR 分段所需）：段落本身要 word-wrap，必须 wrap=square 让 PPT 按宽切，
+    # 否则长段落会撑成单行串过整张幻灯片（典型："<p>...long</p><br><br><p>...long</p>" 双段排版）
     runs_raw = rec.get("runs") or []
-    has_explicit_break = any(run.get("linebreak") for run in runs_raw)
-    no_auto_wrap = is_single_line or has_explicit_break
+    br_count = sum(1 for run in runs_raw if run.get("linebreak"))
+    has_explicit_break = br_count > 0
+    # 计算"有效行距"：leaf 自身 lineHeight（容器 computed 值）vs runs 内最大字号节点的
+    # lineHeight，取较大者。叶子 .fadelist-items (16px / lh 14.72px) 但 span 是 144px / lh 144px
+    # 这种 case，按 leaf 算行距会让 144px 文字被压在 14.72px 行距里叠压
+    style_for_lh = rec.get("style", {})
+    leaf_fs = style_for_lh.get("fontSize", 16)
+    effective_lh_px = _line_height_px(style_for_lh.get("lineHeight"), leaf_fs)
+    effective_fs = leaf_fs
+    for run in runs_raw:
+        if run.get("linebreak"):
+            continue
+        rfs = run.get("fontSize")
+        rlh = run.get("lineHeight")
+        if rfs and rlh:
+            rlh_px = _line_height_px(rlh, rfs)
+            if rlh_px > effective_lh_px:
+                effective_lh_px = rlh_px
+                effective_fs = rfs
+    expected_lines = (r["h"] / effective_lh_px) if effective_lh_px > 0 else 1.0
+    is_tight_layout = expected_lines <= br_count + 1 + 0.7
+    no_auto_wrap = is_single_line or (has_explicit_break and is_tight_layout)
     tf.word_wrap = not no_auto_wrap
     # textbox 几何 = HTML BCR；CSS padding 进 OOXML 内 margin。
     # 这样：text-align:center 时居中点真的对齐 HTML 元素中心；
@@ -789,8 +826,12 @@ def add_text_box(slide, rec):
     pPr.set("algn", h_algn)
     # 显式写行距：根据 HTML 实测 line-height/font-size 比率
     # 不写的话 PPT 用字体默认（CJK 字体默认行距大幅大于 CSS），导致大标题叠压下面元素
-    style_for_lh = rec.get("style", {})
-    _apply_line_spacing(pPr, style_for_lh.get("lineHeight"), style_for_lh.get("fontSize", 16))
+    # effective_lh_px / effective_fs 已在 no_auto_wrap 段计算（leaf vs runs 内最大字号 lh）
+    _apply_line_spacing(
+        pPr,
+        f"{effective_lh_px}px" if effective_lh_px > 0 else rec.get("style", {}).get("lineHeight"),
+        effective_fs,
+    )
 
     # 清掉默认 run
     for r_el in p._p.findall(qn("a:r")):
@@ -819,6 +860,23 @@ def add_text_box(slide, rec):
     _fix_empty_paragraph_sizes(tf, style_for_lh.get("fontSize", 16))
 
     return tb
+
+
+def _line_height_px(line_height, font_size_px: float) -> float:
+    """CSS line-height → 像素值（用于估算文本框能容纳几条可视行）。"""
+    if not font_size_px or font_size_px <= 0:
+        return 0.0
+    s = str(line_height or "").strip()
+    if not s or s.lower() == "normal":
+        return font_size_px * 1.2
+    try:
+        if s.endswith("px"):
+            return float(s[:-2])
+        if s.endswith("%"):
+            return float(s[:-1]) / 100.0 * font_size_px
+        return float(s) * font_size_px
+    except ValueError:
+        return font_size_px * 1.2
 
 
 def _parse_line_spacing(line_height: str | float | None, font_size_px: float) -> tuple[str, int] | None:

@@ -238,6 +238,7 @@ EXTRACT_JS = r"""
           letterSpacing: s.letterSpacing,
           textDecoration: s.textDecorationLine,
           textShadow: s.textShadow,
+          lineHeight: s.lineHeight,
         });
       } else if (n.nodeType === 1) {
         // skip <br>: emit a soft break marker
@@ -301,6 +302,7 @@ EXTRACT_JS = r"""
           letterSpacing: s.letterSpacing,
           textDecoration: s.textDecorationLine,
           textShadow: s.textShadow,
+          lineHeight: s.lineHeight,
         };
         for (const m of raw.matchAll(/\S+/g)) {
           range.setStart(n, m.index);
@@ -310,7 +312,7 @@ EXTRACT_JS = r"""
           if (!rects.length) continue;
           if (rects.length > 1) splitTokenAcrossLines = true;
           const r = rects[0];
-          tokens.push({ text: m[0], top: r.top, left: r.left, style });
+          tokens.push({ text: m[0], top: r.top, bottom: r.bottom, left: r.left, style });
         }
       } else if (n.nodeType === 1) {
         if (n.tagName === 'BR') return;
@@ -323,12 +325,29 @@ EXTRACT_JS = r"""
 
     const lines = [];
     const tolerance = Math.max(2, parseFloat(getComputedStyle(el).fontSize || '16') * 0.35);
+    // 两 token 同一行的判定有两条任一成立即可：
+    //   a) top 接近（同字号常规多行 case，top 差异 ≈ 渲染漂移）
+    //   b) 垂直区间重叠达到较小元素高度的 50% 以上（同 baseline 但字号不同的 inline，
+    //      例 $29 + <span>/mo</span>：baseline 对齐时小号 top 比大号低 ~ ascender 差，
+    //      单看 top 会误判换行；但小号几乎完全落在大号区间内，重叠占比近 100%）
+    // 行高 < 1 的栈式相邻行：rect 包含 ascender/descender，相邻行视觉 rect 会有少量
+    // 重叠（如 144px 字号 line-height:1 → rect 173px 高 / 行距 144px → 重叠 29px）
+    // 比例阈值（50%）能把这种"接缝处少量重叠"和"真正同行的小元素套进大元素"区分开
+    const sameLine = (tok, line) => {
+      if (Math.abs(tok.top - line.top) <= tolerance) return true;
+      const overlap = Math.min(tok.bottom, line.bottom) - Math.max(tok.top, line.top);
+      if (overlap <= tolerance) return false;
+      const minHeight = Math.min(tok.bottom - tok.top, line.bottom - line.top);
+      return overlap >= minHeight * 0.5;
+    };
     for (const tok of tokens) {
       const last = lines[lines.length - 1];
-      if (!last || Math.abs(tok.top - last.top) > tolerance) {
-        lines.push({ top: tok.top, tokens: [tok] });
-      } else {
+      if (last && sameLine(tok, last)) {
         last.tokens.push(tok);
+        last.top = Math.min(last.top, tok.top);
+        last.bottom = Math.max(last.bottom, tok.bottom);
+      } else {
+        lines.push({ top: tok.top, bottom: tok.bottom, tokens: [tok] });
       }
     }
     if (lines.length <= 1) return originalRuns;
@@ -669,6 +688,7 @@ EXTRACT_JS = r"""
           letterSpacing: ps.letterSpacing,
           textDecoration: ps.textDecorationLine,
           textShadow: ps.textShadow,
+          lineHeight: ps.lineHeight,
         });
       } else if (n.nodeType === 1) {
         if (n.tagName === 'BR') { runs.push({ text: '\n', linebreak: true }); return; }
@@ -680,6 +700,47 @@ EXTRACT_JS = r"""
       }
     };
     for (const n of trimmed) walkInline(n);
+
+    // atomic-inline 元素（display:inline-block / inline-flex 的 <button> 等）
+    // 走 emitInlineGroup 而不进 walk()，所以 complexDecoration 路径会被跳过。
+    // 这里补一道：若它有 box-shadow / background-image / 复杂伪元素装饰，
+    // 也截一张 deco_snapshot 嵌底，下方 text 记录把 bg/border 清掉避免双绘
+    let inlineDecoCleared = false;
+    if (atomicEl) {
+      const aS = getComputedStyle(atomicEl);
+      const aTextLeaf = isTextLeaf(atomicEl);
+      const aPseudoNeedsSnap = (pseudo) =>
+        hasRasterPseudoDecoration(atomicEl, pseudo) && !(aTextLeaf && isTextOnlyPseudoMarker(atomicEl, pseudo));
+      const aComplex = hasNonPseudoComplexDecoration(aS, atomicEl) ||
+        aPseudoNeedsSnap('::before') || aPseudoNeedsSnap('::after');
+      if (aComplex) {
+        const aR = decorationCaptureRect(atomicEl);
+        if (aR.width > 0 && aR.height > 0) {
+          const decoIndex = records.filter(x => x.kind === 'deco_snapshot').length;
+          const marker = `slide${slideIndex+1}-deco${decoIndex+1}`;
+          atomicEl.setAttribute('data-pptx-deco-id', marker);
+          records.push({
+            id: nodeId++,
+            kind: 'deco_snapshot',
+            tag: atomicEl.tagName.toLowerCase(),
+            rect: rectRel(aR),
+            naturalSize: { w: atomicEl.offsetWidth, h: atomicEl.offsetHeight },
+            rotation: cumulativeRotation(atomicEl),
+            marker,
+            screenshotClip: { x: aR.left, y: aR.top, w: aR.width, h: aR.height },
+          });
+          inlineDecoCleared = true;
+        }
+      }
+    }
+    const decoForInline = inlineDecoCleared
+      ? { hasBg: false, bg: 'rgba(0, 0, 0, 0)', borderTop: false, borderBottom: false,
+          borderLeft: false, borderRight: false, borderColor: gs.borderTopColor,
+          borderTopColor: gs.borderTopColor, borderBottomColor: gs.borderBottomColor,
+          borderLeftColor: gs.borderLeftColor, borderRightColor: gs.borderRightColor,
+          borderTopWidth: 0, borderBottomWidth: 0, borderLeftWidth: 0, borderRightWidth: 0,
+          borderRadius: gs.borderTopLeftRadius }
+      : decoFromStyle(gs, hasBg, bg, borderTop, borderBottom, borderLeft, borderRight);
 
     records.push({
       id: nodeId++,
@@ -708,7 +769,7 @@ EXTRACT_JS = r"""
         justifyContent: gs.justifyContent,
         writingMode: gs.writingMode,
       },
-      deco: decoFromStyle(gs, hasBg, bg, borderTop, borderBottom, borderLeft, borderRight),
+      deco: decoForInline,
       text: txt,
     });
   };
@@ -803,6 +864,43 @@ EXTRACT_JS = r"""
     return { left: l, top: t, width: Math.abs(x2 - x1), height: Math.abs(y2 - y1) };
   };
 
+  // box-shadow（含多层）向外延展量。inset shadow 不算（不影响外部 AABB）
+  // 输入：computed boxShadow 值，例 "rgb(244, 208, 63) 8px 8px 0px"
+  //                            或 "rgb(15, 27, 61) 4px 0px 0px 0px, rgba(244,208,63,1) 8px 8px 0px 0px"
+  // 输出：{top, right, bottom, left} 像素延展，全 0 表示无延展
+  const parseBoxShadowExtent = (value) => {
+    const zero = { top: 0, right: 0, bottom: 0, left: 0 };
+    if (!value || value === 'none') return zero;
+    // 顶层逗号切分（跳过括号内逗号）；color 是 rgb()/rgba() 直接 split(',') 会切坏
+    const parts = [];
+    let depth = 0, cur = '';
+    for (const ch of value) {
+      if (ch === '(') { depth++; cur += ch; }
+      else if (ch === ')') { depth--; cur += ch; }
+      else if (ch === ',' && depth === 0) { parts.push(cur.trim()); cur = ''; }
+      else cur += ch;
+    }
+    if (cur.trim()) parts.push(cur.trim());
+    const ext = { top: 0, right: 0, bottom: 0, left: 0 };
+    for (const part of parts) {
+      if (/\binset\b/i.test(part)) continue;
+      // 去掉 color token，剩下数值
+      const numsOnly = part.replace(/rgba?\([^)]+\)/g, '').replace(/#[\dA-Fa-f]+/g, '');
+      const nums = (numsOnly.match(/-?\d+\.?\d*(?=px)/g) || []).map(parseFloat);
+      if (nums.length < 2) continue;
+      const dx = nums[0], dy = nums[1];
+      const blur = nums.length >= 3 ? nums[2] : 0;
+      const spread = nums.length >= 4 ? nums[3] : 0;
+      const r = blur + spread;
+      ext.right = Math.max(ext.right, dx + r);
+      ext.left = Math.max(ext.left, -dx + r);
+      ext.bottom = Math.max(ext.bottom, dy + r);
+      ext.top = Math.max(ext.top, -dy + r);
+    }
+    for (const k of Object.keys(ext)) ext[k] = Math.max(0, ext[k]);
+    return ext;
+  };
+
   const decorationCaptureRect = (el) => {
     const baseDom = el.getBoundingClientRect();
     const base = { left: baseDom.left, top: baseDom.top, width: baseDom.width, height: baseDom.height };
@@ -814,6 +912,14 @@ EXTRACT_JS = r"""
     if (outline > 0) {
       r = { left: r.left - outline, top: r.top - outline,
             width: r.width + outline * 2, height: r.height + outline * 2 };
+    }
+    // box-shadow 向外延展：偏移 + blur + spread，不带就是 0
+    // 不延展 → 截图框裁掉 shadow，PPT 里整圈"硬阴影"丢失（8-bit 风模板会丢黄色 step shadow）
+    const shx = parseBoxShadowExtent(s.boxShadow);
+    if (shx.top || shx.right || shx.bottom || shx.left) {
+      r = { left: r.left - shx.left, top: r.top - shx.top,
+            width: r.width + shx.left + shx.right,
+            height: r.height + shx.top + shx.bottom };
     }
     return r;
   };
