@@ -7,6 +7,8 @@
   <a href="SKILL.md"><img src="https://img.shields.io/badge/Claude%20Code-skill-D97757" alt="Claude Code skill"></a>
 </p>
 
+<p align="center"><sub>📖 <a href="README.md">English</a> ｜ <b>中文</b></sub></p>
+
 把 HTML 幻灯片转换成可交付的 `.pptx`：文字尽量保持 PowerPoint 原生文本框，字体按需嵌入，复杂 CSS 装饰自动截图兜底，并生成 HTML/PPT 视觉对照材料方便审查。
 
 <table align="center">
