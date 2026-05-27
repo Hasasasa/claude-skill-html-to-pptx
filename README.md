@@ -32,6 +32,12 @@ html-to-pptx avoids the "whole-page screenshot" route. It decomposes HTML into o
 
 The result: the output stays close to the HTML source while remaining searchable, editable, and rescalable in PowerPoint / WPS — not a stack of immutable images.
 
+## Gets better with use
+
+Each install keeps a private `references/lessons-learned.md` — seeded once from the committed template, then gitignored. When the audit loop turns up a generalizable HTML anti-pattern or OOXML boundary, the fix recipe gets appended there. Every subsequent convert re-reads the file, so decks sharing traits with ones you've already audited tend to land cleaner on the first pass.
+
+The local copy is never overwritten by upstream — `git pull` updates the template, not your accumulated notes.
+
 ## What it handles
 
 Supports single-file HTML decks from [beautiful-html-templates](https://github.com/zarazhangrui/beautiful-html-templates) / [guizang-ppt-skill](https://github.com/op7418/guizang-ppt-skill) / Reveal.js / hand-written decks / browser fullscreen pages, with automatic slide detection.

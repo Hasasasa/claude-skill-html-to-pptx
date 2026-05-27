@@ -32,6 +32,12 @@ html-to-pptx 不走“整页截图”的路线。它会把 HTML 拆成 PowerPoin
 
 结果是：输出文件尽量接近 HTML 原稿，同时仍能在 PowerPoint / WPS 里改文字、搜内容、调版式，而不是一叠不可编辑的大图。
 
+## 越用越好
+
+每次安装会在本地维护一份 `references/lessons-learned.md`（首次运行 convert 时从模板 seed 一次，之后 gitignored）。audit 流程中遇到通用 HTML 反模式或 OOXML 边界时，对应的写法或修复方法会沉淀到这份文件里。后续每次 convert 都会重新读取，所以风格相近的 deck 会一次比一次更顺。
+
+本地副本永远不会被上游覆盖——`git pull` 只更新模板，不动已经沉淀下来的内容。
+
 ## 快速开始（Claude Code）
 
 ### 安装
