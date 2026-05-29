@@ -162,6 +162,7 @@ EXTRACT_JS = r"""
       letterSpacing: s.letterSpacing,
       textDecoration: s.textDecorationLine,
       textShadow: s.textShadow,
+      textTransform: s.textTransform,
     };
   };
 
@@ -239,6 +240,7 @@ EXTRACT_JS = r"""
           textDecoration: s.textDecorationLine,
           textShadow: s.textShadow,
           lineHeight: s.lineHeight,
+          textTransform: s.textTransform,
         });
       } else if (n.nodeType === 1) {
         // skip <br>: emit a soft break marker
@@ -265,7 +267,8 @@ EXTRACT_JS = r"""
       && a.color === b.color
       && a.letterSpacing === b.letterSpacing
       && a.textDecoration === b.textDecoration
-      && a.textShadow === b.textShadow;
+      && a.textShadow === b.textShadow
+      && a.textTransform === b.textTransform;
   };
 
   const pushStyledText = (runs, text, style) => {
@@ -303,6 +306,7 @@ EXTRACT_JS = r"""
           textDecoration: s.textDecorationLine,
           textShadow: s.textShadow,
           lineHeight: s.lineHeight,
+          textTransform: s.textTransform,
         };
         for (const m of raw.matchAll(/\S+/g)) {
           range.setStart(n, m.index);
@@ -689,6 +693,7 @@ EXTRACT_JS = r"""
           textDecoration: ps.textDecorationLine,
           textShadow: ps.textShadow,
           lineHeight: ps.lineHeight,
+          textTransform: ps.textTransform,
         });
       } else if (n.nodeType === 1) {
         if (n.tagName === 'BR') { runs.push({ text: '\n', linebreak: true }); return; }

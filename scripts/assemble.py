@@ -948,10 +948,12 @@ def _emit_run(paragraph, text, run, text_transform):
     """向 paragraph 写入一个富文本 run。直接操作 OOXML 以精确控制 letterSpacing。"""
     if not text:
         return
-    # text-transform
-    if text_transform == "uppercase":
+    # text-transform: run 自带的 textTransform 优先（处理 descendant 上的 override，
+    # 例如父级 text-transform: uppercase + .it-emph 子级 text-transform: none）
+    effective_transform = run.get("textTransform") or text_transform
+    if effective_transform == "uppercase":
         text = text.upper()
-    elif text_transform == "lowercase":
+    elif effective_transform == "lowercase":
         text = text.lower()
 
     # 解析参数
