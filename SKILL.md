@@ -34,7 +34,7 @@ python <skill_dir>/convert.py <input.html>
 | `--no-preflight` | 关闭 Stage 1 风险预扫 |
 | `--no-verify` | 关闭 Stage 5a 结构化自检 |
 | `--no-visual-audit` | 关闭 Stage 5b 视觉 audit 物料产出。日常不要关 |
-| `--install-user-fonts` | 把自动解析到的非 CJK 字体装到用户字体目录（让 WPS 能正确渲染）。Win/macOS/Linux 都支持。**必须先问用户**，见下方"字体安装确认"章节 |
+| `--install-user-fonts` | 把自动解析到的非 CJK 字体装到用户字体目录（让 WPS 能正确渲染）。Win/macOS/Linux 都支持。**必须先问用户**，见下方"配置确认"章节 |
 | `--only-slides N,N,N` | **增量重跑**。逗号分隔的页号（1-based）。measure 只跑指定页 + 与上轮 cached measurement 合并；assemble/embed 仍全量；Stage 5a 只渲指定页；Stage 5b 只重建指定页的 compare 图——其它页全部复用上轮缓存。audit 迭代轮专用，详见下方"增量重跑"章节 |
 | `--cleanup` | 不做转换。删 input.pptx 旁的 audit / measurement / preflight 工作物，只保留 .pptx 和 audited.html。**最终交付前用**，见下方"工作流"末步 |
 
@@ -75,61 +75,46 @@ mode = "ask"           # "triage" / "page" / "manual" / "ask" 由 agent 询问
   - `"ask"` 或缺失 → agent 通过 AskUserQuestion 收集偏好后改写此项（默认）
 - **首次使用**：agent 通过 AskUserQuestion 收集 `fonts.auto_install` 和 `audit.mode` 后**自己 Write 这个文件**——用户不用手动建
 
-## 字体安装确认（第一次 convert 之前完成）
+## 配置确认（第一次 convert 之前完成）
 
-PowerPoint COM `slide.Export()` 和 WPS Office 都不读 pptx 内嵌的裸 TTF——audit 渲染和 WPS 都回退到系统字体。装到用户字体目录后两者都按系统字体走。
+两条偏好要在第一次 convert 之前确认：`fonts.auto_install` 和 `audit.mode`。流程相同，差别只在触发条件和问法。
+
+### 通用流程
+
+每条偏好独立按下面顺序判定：
+
+1. Read `<skill_dir>/.config.local.toml`，看对应字段：
+   - 合法非 `ask` 值 → 按该值走，会话内不再问
+   - `ask` 或文件 / 字段缺失 → 走"触发判定 + ask"
+2. CLAUDE.md / 全局指令写明了等同值的，按写明值走，并补写 config（保持单一事实源）
+
+触发后 AskUserQuestion 问一次，**两条都要做**：
+
+- **写入** `<skill_dir>/.config.local.toml` 对应字段为用户答复（不写 `ask`，否则下次会话还会再问）
+- 本次会话同时按答复走
+
+写 config 时：文件**不存在** → Write 整文件落盘（[fonts] [cleanup] [audit] 三段模板）；文件**已存在** → 用 Edit 做单行 replace（只改这一个字段），**不要** Write 重写整文件，否则会吞掉用户其它自定义 key。
+
+同一会话两条都触发 → 合并到同一条 AskUserQuestion 里一次问完。
+
+### `fonts.auto_install` —— 字体安装
+
+PowerPoint COM `slide.Export()` 和 WPS Office 都不读 pptx 内嵌的裸 TTF——audit 渲染和 WPS 都回退到系统字体。装到用户字体目录后两者都按系统字体走。目录（均为用户级，可手工删）：
 
 - Windows: `%LOCALAPPDATA%\Microsoft\Windows\Fonts\` + HKCU 注册
 - macOS: `~/Library/Fonts/`
 - Linux: `~/.local/share/fonts/` + `fc-cache -f`
 
-用户级，无需管理员，可手工删。
-
-### 询问顺序（先读 config）
-
-每次会话第一次要 convert 之前，按下面顺序判定：
-
-1. Read `<skill_dir>/.config.local.toml`，看 `fonts.auto_install`：
-   - `"yes"` → 不问，CLI 不用加 flag（convert.py 自己加），后续整个会话也不再问
-   - `"no"` → 不问，不加 flag，整个会话不再问
-   - `"ask"` 或 config 文件不存在 / 字段缺失 → 进入下面"触发判定 + ask"
-2. CLAUDE.md / 全局指令里写过"以后字体自动装无需再问"的，等同 `"yes"`，并补写 config（保持单一事实源）
-
-### 触发判定（仅当 config = ask 时）
-
-看 HTML `<head>` 的 `<link href="...fonts.googleapis.com/...">` / `@import url(https://fonts.googleapis.com/...)` / `<style>` 里 `font-family:` 出现的字体名：
+**触发判定**：看 HTML `<head>` 的 `<link href="...fonts.googleapis.com/...">` / `@import url(https://fonts.googleapis.com/...)` / `<style>` 里 `font-family:` 出现的字体名：
 
 - **触发**：任何 GF / 自托管字体（Bricolage Grotesque、DM Sans、Inter、Space Grotesk、Caveat 等）
 - **不触发**：只用系统字体白名单（Arial、Times New Roman、Helvetica、Helvetica Neue、Courier、system-ui、-apple-system、BlinkMacSystemFont、SF Pro、Microsoft YaHei、SimSun、PingFang、Hiragino）
 
-### 触发后
+按答复：同意 → 加 `--install-user-fonts`；拒绝 → 不加。
 
-AskUserQuestion 问一次，**两条都要做**：
+### `audit.mode` —— 视觉审查模式
 
-- **写入** `<skill_dir>/.config.local.toml`：同意 → `fonts.auto_install = "yes"`、拒绝 → `= "no"`（不写 ask，否则下次会话还会再问一次）
-- 本次会话同时按答案走（同意 → 加 `--install-user-fonts`，拒绝 → 不加）
-
-写 config 时：文件**不存在** → Write 整文件落盘（[fonts] [cleanup] [audit] 三段模板内容）；文件**已存在** → 用 Edit 做单行 replace（只改 `auto_install` 一行），**不要** Write 重写整文件，否则会吞掉用户其它自定义 key（包括以后可能新增的章节）。
-
-## audit 模式确认（第一次 convert 之前完成）
-
-视觉审查有三种模式（`triage` / `page` / `manual`，含义见上方 "配置" 章节）。每次会话第一次要 convert 之前判定：
-
-1. Read `<skill_dir>/.config.local.toml`，看 `[audit].mode`：
-   - `"triage"` / `"page"` / `"manual"` → 不问，按该模式走，后续整个会话不再问
-   - `"ask"` 或 config 文件不存在 / 字段缺失 → AskUserQuestion 收集用户偏好
-2. CLAUDE.md / 全局指令里写过"以后 audit 模式固定为 X"的，等同 `X`，并补写 config
-
-### 触发后
-
-AskUserQuestion 用一次性单选题问用户，选项就是 `triage` / `page` / `manual`，**两条都要做**：
-
-- **写入** `<skill_dir>/.config.local.toml` 的 `[audit].mode` 为用户答复（不写 `ask`，否则下次会话还会再问）
-- 本次会话按答复走（`triage` → 主 agent 自己读 contact sheet 分流再派 sub-agent；`page` → 全量派 sub-agent；`manual` → 把 audit 目录交给用户）
-
-如果本次会话同时触发了 "字体安装确认"（HTML 引用了 GF / 自托管字体），可以把两个问题合并到同一条 AskUserQuestion 里一次问完，避免连问两次。
-
-写 config 时：文件**不存在** → 按三段模板 Write 整文件；文件**已存在** → 用 Edit 做单行 replace（只改 `mode` 一行），不要 Write 重写整文件。
+三种模式 `triage` / `page` / `manual`（含义见上方 "配置" 章节）。**每次会话第一次 convert 之前都判定**（不依赖 HTML 内容触发）。AskUserQuestion 用单选题，选项即三种模式。
 
 ## 工作流（强制）
 
@@ -180,7 +165,7 @@ Stage 5b 视觉 audit 需要把 .pptx 渲染成 PNG，依赖：
 
 ### 视觉 audit 模式（config，前提：5b 跑起来了）
 
-执行视觉审查前读取 `<skill_dir>/.config.local.toml` 的 `[audit].mode`。正常应在第一次 convert 前通过上方 "audit 模式确认" 完成询问；如果到这里 mode 还是 `"ask"`（说明 agent 漏问了），立刻按 "audit 模式确认" 章节询问用户再继续。
+执行视觉审查前读取 `<skill_dir>/.config.local.toml` 的 `[audit].mode`。正常应在第一次 convert 前通过上方 "配置确认" 完成询问；如果到这里 mode 还是 `"ask"`（说明 agent 漏问了），立刻按 "配置确认" 章节询问用户再继续。
 
 每个 mode 的具体含义见上方 "配置" 章节；这里只列适用场景：
 

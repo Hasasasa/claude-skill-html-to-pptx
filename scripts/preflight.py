@@ -17,6 +17,7 @@
 - R007 chinese-italic             CJK 字符使用 font-style: italic（PPT 会回退正体）
 - R008 external-font              HTML 用到外部字体家族（font_resolver 会尝试从 GF 拉，命中即嵌入；GF 没有的就回退到 viewer 系统字体）
 - R009 large-rotated-band         占整页大色带 + 旋转/倾斜（几何与截图边界情况）
+- R010 shadow-dom-font-shadowed   slide 通过 <slot> 嵌入 shadow DOM，`:host` 上的 font-family 拦截了 body 的字体继承
 
 每条风险有 severity: high / medium / low。
 slide.confidence 由该 slide 的最高 severity 决定（high → low confidence）。
@@ -283,6 +284,8 @@ SCAN_JS = r"""
       });
     }
 
+    // (R010 在循环外另算，见下面)
+
     // R009 大旋转色带：占 slide 面积 > 25% + 含 transform rotate/skew
     const t = s.transform;
     if (t && t !== 'none' && /matrix/.test(t)) {
@@ -308,6 +311,35 @@ SCAN_JS = r"""
             }
           }
         }
+      }
+    }
+  }
+
+  // R010 shadow-DOM 字体截断：slide 通过 <slot> 落进 shadow root，
+  //      :host { font-family } 拦截了 body 字体继承，PPT 端拉的是 host 的
+  //      系统字体回退而不是 body 声明的 GF 字体。详见 lessons-learned。
+  {
+    let host = null;
+    let cur = slide;
+    while (cur && cur !== document) {
+      if (cur.assignedSlot) {
+        const root = cur.assignedSlot.getRootNode();
+        if (root instanceof ShadowRoot) { host = root.host; break; }
+      }
+      cur = cur.parentNode;
+    }
+    if (host) {
+      const norm = s => (s || '').replace(/\s+/g, '');
+      const hostFont = norm(getComputedStyle(host).fontFamily);
+      const bodyFont = norm(getComputedStyle(document.body).fontFamily);
+      if (hostFont && bodyFont && hostFont !== bodyFont) {
+        risks.push({
+          code: 'R010',
+          name: 'shadow-dom-font-shadowed',
+          severity: 'high',
+          detail: `<${host.tagName.toLowerCase()}> :host font-family 拦截 body 继承（slide 看到 ${hostFont.slice(0,60)}）`,
+          where: describe(host),
+        });
       }
     }
   }

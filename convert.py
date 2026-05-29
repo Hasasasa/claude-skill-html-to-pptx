@@ -35,6 +35,61 @@ def _has_cjk_chars(meas: dict) -> bool:
     return False
 
 
+def _run_measure_with_incremental(html_path: Path, anchor_json: Path,
+                                  only_indices: set[int] | None,
+                                  measure_needs_screenshots: bool, measure) -> dict:
+    """跑 measure。`only_indices` 给出 --only-slides 增量目标：复用上轮 cache + 合并本轮 partial。
+
+    回退：cache 缺失 / 结构坏 / 页数变化 → 自动转全量重测。
+    """
+    # 增量模式预检：要复用上轮 measurement，必须有 cached 文件 + 结构正确
+    effective_only_indices = only_indices
+    prior_measurement = None
+    if effective_only_indices is not None:
+        if not anchor_json.exists():
+            print(f"[only-slides] 找不到上轮 cached measurement ({anchor_json.name})——回退全量 measure")
+            effective_only_indices = None
+        else:
+            try:
+                prior_measurement = json.loads(anchor_json.read_text(encoding="utf-8"))
+                if not isinstance(prior_measurement, dict) or "slides" not in prior_measurement:
+                    raise ValueError("缓存格式不符（缺 'slides'）")
+            except Exception as e:
+                print(f"[only-slides] 上轮 cache 读失败（{e}）——回退全量 measure")
+                effective_only_indices = None
+                prior_measurement = None
+
+    t0 = time.perf_counter()
+    meas = measure(html_path, anchor_json,
+                   only_indices=effective_only_indices,
+                   no_screenshots=not measure_needs_screenshots, verbose=True)
+    print(f"[measure]  {time.perf_counter()-t0:.2f}s")
+
+    # 增量合并：本轮 partial measurement 与上轮 cache 合并成全 deck
+    if effective_only_indices is not None and prior_measurement is not None:
+        partial_indices = meas.get("_partial_indices") or []
+        total = meas.get("_total")
+        prior_total = len(prior_measurement.get("slides") or [])
+        if total is None or total != prior_total:
+            print(f"[only-slides] HTML 页数变化（cache {prior_total} 页 vs 当前 {total} 页）"
+                  "——丢弃增量、重新全量 measure")
+            t0 = time.perf_counter()
+            meas = measure(html_path, anchor_json,
+                           no_screenshots=not measure_needs_screenshots, verbose=True)
+            print(f"[measure]  {time.perf_counter()-t0:.2f}s（重测）")
+        else:
+            merged_slides = list(prior_measurement["slides"])
+            for one_based_idx, slide_data in zip(partial_indices, meas["slides"]):
+                merged_slides[one_based_idx - 1] = slide_data
+            meas = {"slides": merged_slides}
+            # 把合并后的全 deck 写回 cache，让下一轮读到最新版
+            anchor_json.write_text(json.dumps(meas, ensure_ascii=False, indent=2),
+                                   encoding="utf-8")
+            print(f"[only-slides] 合并 {partial_indices} 页 → 全 deck {len(merged_slides)} 页")
+
+    return meas
+
+
 def convert(html_path: Path, out_path: Path, keep_screenshots: bool, embed_fonts: bool,
             do_verify: bool = True,
             do_preflight: bool = True,
@@ -93,51 +148,9 @@ def convert(html_path: Path, out_path: Path, keep_screenshots: bool, embed_fonts
             print(f"[preflight] 耗时 {time.perf_counter()-t0:.2f}s")
 
         # 1) measure（结果通过 dict 在内存里传递；anchor 仅用于 svg / 截图资源定位）
-
-        # 增量模式预检：要复用上轮 measurement，必须有 cached 文件 + 结构正确
-        effective_only_indices = only_indices
-        prior_measurement = None
-        if effective_only_indices is not None:
-            if not anchor_json.exists():
-                print(f"[only-slides] 找不到上轮 cached measurement ({anchor_json.name})——回退全量 measure")
-                effective_only_indices = None
-            else:
-                try:
-                    prior_measurement = json.loads(anchor_json.read_text(encoding="utf-8"))
-                    if not isinstance(prior_measurement, dict) or "slides" not in prior_measurement:
-                        raise ValueError("缓存格式不符（缺 'slides'）")
-                except Exception as e:
-                    print(f"[only-slides] 上轮 cache 读失败（{e}）——回退全量 measure")
-                    effective_only_indices = None
-                    prior_measurement = None
-
-        t0 = time.perf_counter()
-        meas = measure(html_path, anchor_json,
-                       only_indices=effective_only_indices,
-                       no_screenshots=not measure_needs_screenshots, verbose=True)
-        print(f"[measure]  {time.perf_counter()-t0:.2f}s")
-
-        # 增量合并：本轮 partial measurement 与上轮 cache 合并成全 deck
-        if effective_only_indices is not None and prior_measurement is not None:
-            partial_indices = meas.get("_partial_indices") or []
-            total = meas.get("_total")
-            prior_total = len(prior_measurement.get("slides") or [])
-            if total is None or total != prior_total:
-                print(f"[only-slides] HTML 页数变化（cache {prior_total} 页 vs 当前 {total} 页）"
-                      "——丢弃增量、重新全量 measure")
-                t0 = time.perf_counter()
-                meas = measure(html_path, anchor_json,
-                               no_screenshots=not measure_needs_screenshots, verbose=True)
-                print(f"[measure]  {time.perf_counter()-t0:.2f}s（重测）")
-            else:
-                merged_slides = list(prior_measurement["slides"])
-                for one_based_idx, slide_data in zip(partial_indices, meas["slides"]):
-                    merged_slides[one_based_idx - 1] = slide_data
-                meas = {"slides": merged_slides}
-                # 把合并后的全 deck 写回 cache，让下一轮读到最新版
-                anchor_json.write_text(json.dumps(meas, ensure_ascii=False, indent=2),
-                                       encoding="utf-8")
-                print(f"[only-slides] 合并 {partial_indices} 页 → 全 deck {len(merged_slides)} 页")
+        meas = _run_measure_with_incremental(
+            html_path, anchor_json, only_indices,
+            measure_needs_screenshots, measure)
 
         # 1.5) auto-resolve fonts（按需从 GF 拉，CJK 走 variable 直链）
         # FONT_PLAN 启动为空，所有字体都在这里按需解析。HTML 含 CJK 字符就强制种子

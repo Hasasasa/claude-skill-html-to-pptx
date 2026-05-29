@@ -61,7 +61,7 @@
 
 | 模式 | 为什么破坏 PPT | HTML 改写 |
 |---|---|---|
-| 自定义元素 shadow DOM 在 `:host` 上声明了 `font-family`（slot 包裹整个 deck，body font 不再继承到 slide）| 浏览器渲染时所有 slot 内文字实际用 :host 的字体链而不是 body 的；measure 阶段记录的 fontFamily 就是 :host 的回退链（多半是 system aliases），resolver 永远不会去拉 body 声明的 GF 字体 → PPT 用 Office 默认 fallback（甚至打字机字形）| 在 `section.slide`（或其它真正承载内容的 selector）上**显式再声明一次** `font-family: "<GF 字体>", ...`，让 slide 的子元素从 slide 处继承到正确字体；不要依赖 body 字体穿透 shadow DOM |
+| 自定义元素 shadow DOM 在 `:host` 上声明了 `font-family`（slot 包裹整个 deck，body font 不再继承到 slide）<br>*preflight R010 自动告警* | 浏览器渲染时所有 slot 内文字实际用 :host 的字体链而不是 body 的；measure 阶段记录的 fontFamily 就是 :host 的回退链（多半是 system aliases），resolver 永远不会去拉 body 声明的 GF 字体 → PPT 用 Office 默认 fallback（甚至打字机字形）| 在 `section.slide`（或其它真正承载内容的 selector）上**显式再声明一次** `font-family: "<GF 字体>", ...`，让 slide 的子元素从 slide 处继承到正确字体；不要依赖 body 字体穿透 shadow DOM |
 | 同行 inline flex / grid 容器只靠 `gap` 隔开多个 `<span>`（如 `<span class="meta"><span>X</span><span>Y</span></span>`，CSS 设 `display:flex; gap:64px`）| 跨 span 的视觉间距是 CSS gap，HTML 文本里两 span 之间没有任何字面字符；measure / OOXML 拿到的是相邻 text run，PPT 渲染时两段字符直接粘连 | 合并成单 span 并塞入字面分隔符（` · ` / `<span>&nbsp;·&nbsp;</span>` 等），让两段字符之间在 DOM 层就有 literal 字符 |
 
 ## OOXML 边界
